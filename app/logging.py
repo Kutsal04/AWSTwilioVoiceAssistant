@@ -12,6 +12,7 @@ ALLOWED_LOG_FIELD_NAMES = {
     "error_kind",
     "event_name",
     "latency_ms",
+    "media_frames",
     "persona_id",
     "queue_depth",
     "session_id",

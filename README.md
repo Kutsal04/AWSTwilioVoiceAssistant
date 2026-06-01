@@ -36,6 +36,7 @@ The current local settings are:
 - `DEFAULT_PERSONA_ID`
 - `VERIFY_TWILIO_SIGNATURE`
 - `TWILIO_AUTH_TOKEN`
+- `MEDIA_IDLE_TIMEOUT_SECONDS`
 - `SESSIONS_TABLE_NAME`
 - `PERSONAS_TABLE_NAME`
 - `TRANSCRIPT_TURNS_TABLE_NAME`
@@ -85,6 +86,18 @@ Pass a persona for testing by adding `?persona_id=appointment_reminder`; otherwi
 
 `VERIFY_TWILIO_SIGNATURE=false` is suitable for local ngrok development. For non-local `ENV_NAME` values, signature verification defaults on unless explicitly disabled, and `TWILIO_AUTH_TOKEN` must be configured.
 
+## Twilio Media Stream
+
+The Twilio Media Streams WebSocket endpoint is:
+
+```text
+GET /media
+```
+
+Phase 3 captures and logs Twilio `connected`, `start`, `media`, and `stop` lifecycle events. Logs include operational identifiers such as `session_id`, `call_sid`, `persona_id`, and `stream_sid`; media payloads are intentionally not logged.
+
+During the Phase 3 manual checkpoint, call the Twilio number through ngrok and confirm the app logs `twilio_media_started` and `twilio_media_stopped`. The call will not produce agent audio until the Nova bridge is added in later phases.
+
 ## Current Status
 
-Phase 2 establishes the inbound Twilio voice webhook and TwiML generation path. Media streaming, Nova, DynamoDB, CDK, and production observability integrations are added in later phases.
+Phase 3 establishes Twilio webhook handling and Twilio Media Streams protocol capture. Nova, DynamoDB, CDK, and production observability integrations are added in later phases.
