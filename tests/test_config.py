@@ -1,0 +1,45 @@
+import pytest
+from pydantic import ValidationError
+
+from app.config import Settings, get_settings
+
+
+def test_settings_defaults_without_env_file() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.env_name == "local"
+    assert settings.public_base_url == "http://localhost:8080"
+    assert settings.default_persona_id == "warm_clinical_followup"
+    assert settings.verify_twilio_signature is False
+    assert settings.sessions_table_name == "sessions"
+    assert settings.personas_table_name == "personas"
+    assert settings.transcript_turns_table_name == "transcript_turns"
+    assert settings.bedrock_region == "us-east-1"
+
+
+def test_settings_validate_public_base_url() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, public_base_url="not-a-url")
+
+
+def test_get_settings_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEFAULT_PERSONA_ID", "appointment_reminder")
+    monkeypatch.setenv("VERIFY_TWILIO_SIGNATURE", "true")
+
+    settings = get_settings()
+
+    assert settings.default_persona_id == "appointment_reminder"
+    assert settings.verify_twilio_signature is True
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+@pytest.mark.parametrize("field_name", ["env_name", "bedrock_region"])
+def test_required_string_fields_reject_empty_values(field_name: str, value: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{field_name: value})
+
+
+def test_settings_strip_whitespace_before_validation() -> None:
+    settings = Settings(_env_file=None, public_base_url="  http://localhost:8080  ")
+
+    assert settings.public_base_url == "http://localhost:8080"

@@ -1,22 +1,51 @@
 from functools import lru_cache
+from urllib.parse import urlparse
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    env_name: str = "local"
-    public_base_url: str = "http://localhost:8080"
-    default_persona_id: str = "warm_clinical_followup"
+    env_name: str = Field(default="local", min_length=1)
+    public_base_url: str = Field(default="http://localhost:8080", min_length=1)
+    default_persona_id: str = Field(default="warm_clinical_followup", min_length=1)
     verify_twilio_signature: bool = False
-    sessions_table_name: str = "sessions"
-    personas_table_name: str = "personas"
-    transcript_turns_table_name: str = "transcript_turns"
-    bedrock_region: str = "us-east-1"
+    sessions_table_name: str = Field(default="sessions", min_length=1)
+    personas_table_name: str = Field(default="personas", min_length=1)
+    transcript_turns_table_name: str = Field(default="transcript_turns", min_length=1)
+    bedrock_region: str = Field(default="us-east-1", min_length=1)
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    @field_validator(
+        "env_name",
+        "public_base_url",
+        "default_persona_id",
+        "sessions_table_name",
+        "personas_table_name",
+        "transcript_turns_table_name",
+        "bedrock_region",
+    )
+    @classmethod
+    def strip_and_validate_non_empty(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("value cannot be empty")
+        return stripped
+
+    @field_validator("public_base_url")
+    @classmethod
+    def validate_public_base_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("public_base_url must be an absolute http or https URL")
+        return value
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

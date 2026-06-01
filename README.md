@@ -29,6 +29,19 @@ Copy local configuration placeholders:
 cp .env.example .env
 ```
 
+The current local settings are:
+
+- `ENV_NAME`
+- `PUBLIC_BASE_URL`
+- `DEFAULT_PERSONA_ID`
+- `VERIFY_TWILIO_SIGNATURE`
+- `SESSIONS_TABLE_NAME`
+- `PERSONAS_TABLE_NAME`
+- `TRANSCRIPT_TURNS_TABLE_NAME`
+- `BEDROCK_REGION`
+
+`Settings` loads these from environment variables and `.env` during local development.
+
 Run tests:
 
 ```bash
@@ -56,4 +69,3 @@ Expected response:
 ## Current Status
 
 Phase 0 establishes the repository skeleton and local smoke-test path. Twilio, Nova, DynamoDB, CDK, and production observability integrations are added in later phases.
-
