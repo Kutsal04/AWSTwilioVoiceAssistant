@@ -1,6 +1,6 @@
 # Implementation Roadmap
 
-This roadmap follows `AGENTS.md` and `docs/adr/0001-real-time-voice-agent-architecture.md`.
+This roadmap follows `AGENTS.md` and `docs/0001-real-time-voice-agent-architecture.md`.
 
 The implementation order intentionally isolates risk. Do not integrate Twilio, Nova, persistence, observability, and infrastructure all at once. Each phase should produce a small, testable result before moving forward.
 
