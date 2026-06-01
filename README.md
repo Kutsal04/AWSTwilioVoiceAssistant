@@ -35,6 +35,7 @@ The current local settings are:
 - `PUBLIC_BASE_URL`
 - `DEFAULT_PERSONA_ID`
 - `VERIFY_TWILIO_SIGNATURE`
+- `TWILIO_AUTH_TOKEN`
 - `SESSIONS_TABLE_NAME`
 - `PERSONAS_TABLE_NAME`
 - `TRANSCRIPT_TURNS_TABLE_NAME`
@@ -66,6 +67,24 @@ Expected response:
 {"status":"healthy"}
 ```
 
+## Twilio Webhook
+
+The inbound voice webhook is:
+
+```text
+POST /twilio/voice
+```
+
+For local Twilio testing, expose the service with ngrok and set `PUBLIC_BASE_URL` to the ngrok HTTPS URL. Configure the Twilio phone number voice webhook to:
+
+```text
+https://<ngrok-host>/twilio/voice
+```
+
+Pass a persona for testing by adding `?persona_id=appointment_reminder`; otherwise the service falls back to `DEFAULT_PERSONA_ID`.
+
+`VERIFY_TWILIO_SIGNATURE=false` is suitable for local ngrok development. For non-local `ENV_NAME` values, signature verification defaults on unless explicitly disabled, and `TWILIO_AUTH_TOKEN` must be configured.
+
 ## Current Status
 
-Phase 0 establishes the repository skeleton and local smoke-test path. Twilio, Nova, DynamoDB, CDK, and production observability integrations are added in later phases.
+Phase 2 establishes the inbound Twilio voice webhook and TwiML generation path. Media streaming, Nova, DynamoDB, CDK, and production observability integrations are added in later phases.

@@ -1,7 +1,7 @@
 from functools import lru_cache
 from urllib.parse import urlparse
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     public_base_url: str = Field(default="http://localhost:8080", min_length=1)
     default_persona_id: str = Field(default="warm_clinical_followup", min_length=1)
     verify_twilio_signature: bool = False
+    twilio_auth_token: str | None = None
     sessions_table_name: str = Field(default="sessions", min_length=1)
     personas_table_name: str = Field(default="personas", min_length=1)
     transcript_turns_table_name: str = Field(default="transcript_turns", min_length=1)
@@ -44,6 +45,20 @@ class Settings(BaseSettings):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("public_base_url must be an absolute http or https URL")
         return value
+
+    @field_validator("twilio_auth_token")
+    @classmethod
+    def strip_optional_secret(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @model_validator(mode="after")
+    def default_signature_verification_for_deployed_envs(self) -> "Settings":
+        if self.env_name != "local" and "verify_twilio_signature" not in self.model_fields_set:
+            self.verify_twilio_signature = True
+        return self
 
 
 @lru_cache
