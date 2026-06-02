@@ -98,6 +98,10 @@ Phase 3 captures and logs Twilio `connected`, `start`, `media`, and `stop` lifec
 
 During the Phase 3 manual checkpoint, call the Twilio number through ngrok and confirm the app logs `twilio_media_started` and `twilio_media_stopped`. The call will not produce agent audio until the Nova bridge is added in later phases.
 
+## Audio Conversion
+
+Phase 4 audio conversion helpers live under `app/audio`. They convert Twilio base64 μ-law 8 kHz frames to Nova PCM16 16 kHz audio, and Nova PCM16 16 kHz audio back to Twilio base64 μ-law 8 kHz payloads. The module is pure Python and independent of Twilio, Nova, and AWS clients.
+
 ## Current Status
 
-Phase 3 establishes Twilio webhook handling and Twilio Media Streams protocol capture. Nova, DynamoDB, CDK, and production observability integrations are added in later phases.
+Phase 4 establishes Twilio/Nova audio codec and resampling helpers. Nova streaming, DynamoDB, CDK, and production observability integrations are added in later phases.
