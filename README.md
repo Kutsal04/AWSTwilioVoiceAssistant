@@ -133,6 +133,12 @@ Current API notes from AWS documentation:
 
 Phase 5 introduces one process-local `SessionActor` per call. Each actor owns its lifecycle state, inbound and outbound bounded audio queues, cancellation task set, and in-memory transcript buffer. When an audio queue is full, the actor deterministically drops the oldest stale frame and logs an operational `audio_frame_dropped` event without caller content.
 
+## Local Audio Bridge
+
+Phase 7 connects Twilio Media Streams to one Nova 2 Sonic stream per call. Twilio inbound media payloads are decoded from μ-law 8 kHz to PCM16 16 kHz and queued into the session actor before being sent to Nova. Nova `audioOutput` events are converted from PCM16 24 kHz to Twilio μ-law 8 kHz outbound `media` messages.
+
+Manual Phase 7 validation requires the local FastAPI service, ngrok, a Twilio inbound call, AWS credentials, and Nova 2 Sonic model access. Success means one call can complete at least one caller-speaks, agent-responds turn, caller hangup is handled cleanly, and logs show lifecycle identifiers without audio payloads or transcript text.
+
 ## Current Status
 
-Phase 6 establishes the isolated Nova 2 Sonic event/client boundary. The Twilio-to-Nova bridge, DynamoDB, CDK, and production observability integrations are added in later phases.
+Phase 7 establishes the first local Twilio-to-Nova audio bridge. DynamoDB, CDK, and production observability integrations are added in later phases.

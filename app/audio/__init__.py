@@ -2,6 +2,7 @@
 
 from app.audio.codec import (
     NOVA_SAMPLE_RATE_HZ,
+    NOVA_OUTPUT_SAMPLE_RATE_HZ,
     PCM16_SAMPLE_WIDTH_BYTES,
     TWILIO_SAMPLE_RATE_HZ,
     AudioConversionError,
@@ -17,6 +18,7 @@ from app.audio.codec import (
 
 __all__ = [
     "NOVA_SAMPLE_RATE_HZ",
+    "NOVA_OUTPUT_SAMPLE_RATE_HZ",
     "PCM16_SAMPLE_WIDTH_BYTES",
     "TWILIO_SAMPLE_RATE_HZ",
     "AudioConversionError",

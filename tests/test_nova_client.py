@@ -54,8 +54,10 @@ class FakeStream:
     def __init__(self, output_bytes: bytes | None = b'{"event":{"sessionEnd":{}}}') -> None:
         self.input_stream = FakeInputStream()
         self.output_bytes = output_bytes
+        self.await_output_calls = 0
 
     async def await_output(self):
+        self.await_output_calls += 1
         return (None, FakeReceiver(self.output_bytes))
 
 
@@ -121,5 +123,21 @@ def test_nova_client_rejects_empty_output_payload() -> None:
 
         with pytest.raises(NovaClientError):
             await client.receive_event()
+
+    asyncio.run(run())
+
+
+def test_nova_client_reuses_output_receiver_for_stream_lifetime() -> None:
+    async def run() -> None:
+        stream = FakeStream()
+        bedrock_client = FakeBedrockClient(stream)
+        client = make_client(bedrock_client)
+
+        await client.open()
+        await client.receive_event()
+        await client.receive_event()
+        await client.close()
+
+        assert stream.await_output_calls == 1
 
     asyncio.run(run())

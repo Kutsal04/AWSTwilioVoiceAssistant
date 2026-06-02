@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     verify_twilio_signature: bool = False
     twilio_auth_token: str | None = None
     media_idle_timeout_seconds: float = Field(default=30.0, gt=0)
+    audio_queue_maxsize: int = Field(default=50, gt=0)
+    nova_stream_open_timeout_seconds: float = Field(default=20.0, gt=0)
     sessions_table_name: str = Field(default="sessions", min_length=1)
     personas_table_name: str = Field(default="personas", min_length=1)
     transcript_turns_table_name: str = Field(default="transcript_turns", min_length=1)

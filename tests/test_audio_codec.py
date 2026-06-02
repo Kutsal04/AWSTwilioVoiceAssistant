@@ -83,7 +83,7 @@ def test_twilio_payload_to_nova_pcm16_converts_ulaw_8khz_to_pcm16_16khz() -> Non
 def test_nova_pcm16_to_twilio_payload_converts_pcm16_16khz_to_ulaw_8khz_payload() -> None:
     pcm16k = sine_pcm16(16_000)
 
-    payload = nova_pcm16_to_twilio_payload(pcm16k)
+    payload = nova_pcm16_to_twilio_payload(pcm16k, source_rate_hz=16_000)
     mu_law_audio = decode_twilio_payload(payload)
 
     assert len(mu_law_audio) < len(pcm16k)
@@ -95,7 +95,7 @@ def test_round_trip_sanity_for_known_sample_frame() -> None:
     twilio_payload = encode_twilio_payload(pcm16_to_mu_law(original_pcm8k))
 
     nova_pcm16 = twilio_payload_to_nova_pcm16(twilio_payload)
-    output_payload = nova_pcm16_to_twilio_payload(nova_pcm16)
+    output_payload = nova_pcm16_to_twilio_payload(nova_pcm16, source_rate_hz=16_000)
     output_pcm8k = mu_law_to_pcm16(decode_twilio_payload(output_payload))
 
     assert len(output_pcm8k) == len(original_pcm8k)

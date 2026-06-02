@@ -290,7 +290,9 @@ DynamoDB failure policy:
 
 Audio queues will be bounded. If the system falls behind, stale audio frames may be dropped and logged. For real-time voice, late audio is often worse than missing audio.
 
-Inbound and outbound queue drops should increment an audio-frame-dropped metric or structured log event. If barge-in is implemented later, outbound audio can be cleared and Twilio can receive a `clear` message to flush already-buffered audio.
+Inbound caller audio is buffered through the session actor before being sent to Nova. Queue drops should increment an audio-frame-dropped metric or structured log event because they represent caller audio that Nova did not receive.
+
+Nova assistant audio is converted and sent directly to Twilio over the live WebSocket. It is not copied into the session actor outbound queue in the required path because there is no consumer for that queue yet, and retaining unused assistant PCM frames creates misleading backpressure warnings. If barge-in or assistant-audio retention is implemented later, outbound buffering should be added deliberately with a real consumer, explicit drop metrics, and Twilio `clear` handling to flush already-buffered audio.
 
 ### Scaling
 

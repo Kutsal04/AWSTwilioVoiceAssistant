@@ -25,6 +25,7 @@ class NovaClient:
         self._input_chunk_factory = input_chunk_factory
         self._bedrock_client: Any | None = None
         self._stream: Any | None = None
+        self._output_receiver: Any | None = None
 
     async def open(self) -> None:
         if self._stream is not None:
@@ -49,8 +50,10 @@ class NovaClient:
     async def receive_event(self) -> NovaParsedEvent:
         if self._stream is None:
             raise NovaClientError("Nova stream is not open")
-        output = await self._stream.await_output()
-        result = await output[1].receive()
+        if self._output_receiver is None:
+            output = await self._stream.await_output()
+            self._output_receiver = output[1]
+        result = await self._output_receiver.receive()
         if not getattr(result, "value", None) or not getattr(result.value, "bytes_", None):
             raise NovaClientError("Nova stream returned an empty output payload")
         return parse_nova_event_bytes(result.value.bytes_)
@@ -60,6 +63,7 @@ class NovaClient:
             return
         await self._stream.input_stream.close()
         self._stream = None
+        self._output_receiver = None
 
     def _create_bedrock_client(self) -> Any:
         sdk_runtime = _import_bedrock_runtime()

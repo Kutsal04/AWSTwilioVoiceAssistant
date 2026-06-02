@@ -13,12 +13,14 @@ ALLOWED_LOG_FIELD_NAMES = {
     "event_name",
     "latency_ms",
     "media_frames",
+    "nova_events",
     "persona_id",
     "queue_depth",
     "session_id",
     "state",
     "status",
     "stream_sid",
+    "task_name",
     "turn_index",
 }
 

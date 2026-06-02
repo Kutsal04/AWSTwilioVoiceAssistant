@@ -11,6 +11,7 @@ with warnings.catch_warnings():
 
 TWILIO_SAMPLE_RATE_HZ = 8_000
 NOVA_SAMPLE_RATE_HZ = 16_000
+NOVA_OUTPUT_SAMPLE_RATE_HZ = 24_000
 PCM16_SAMPLE_WIDTH_BYTES = 2
 
 AudioErrorKind = Literal["invalid_base64_payload", "invalid_pcm16_frame"]
@@ -74,8 +75,8 @@ def twilio_payload_to_nova_pcm16(payload: str) -> bytes:
     return resample_pcm16_mono(pcm8k, TWILIO_SAMPLE_RATE_HZ, NOVA_SAMPLE_RATE_HZ)
 
 
-def nova_pcm16_to_twilio_payload(pcm16_audio: bytes) -> str:
-    pcm8k = resample_pcm16_mono(pcm16_audio, NOVA_SAMPLE_RATE_HZ, TWILIO_SAMPLE_RATE_HZ)
+def nova_pcm16_to_twilio_payload(pcm16_audio: bytes, source_rate_hz: int = NOVA_OUTPUT_SAMPLE_RATE_HZ) -> str:
+    pcm8k = resample_pcm16_mono(pcm16_audio, source_rate_hz, TWILIO_SAMPLE_RATE_HZ)
     mu_law_audio = pcm16_to_mu_law(pcm8k)
     return encode_twilio_payload(mu_law_audio)
 

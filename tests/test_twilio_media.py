@@ -1,4 +1,7 @@
+import asyncio
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,8 +9,48 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.config import Settings, get_settings
 from app.main import app
-from app.twilio.media import TwilioMediaProtocolError, extract_start_metadata, parse_twilio_event
+from app.nova import NovaParsedEvent
+from app.sessions import active_sessions
+from app.twilio.media import (
+    TwilioMediaProtocolError,
+    extract_media_payload,
+    extract_start_metadata,
+    get_nova_client_factory,
+    parse_twilio_event,
+)
 from tests.test_twilio_webhook import override_settings
+
+
+class FakeNovaClient:
+    def __init__(self, output_events: list[NovaParsedEvent] | None = None) -> None:
+        self.opened = False
+        self.closed = False
+        self.sent_events: list[dict] = []
+        self.output_events = output_events or []
+
+    async def open(self) -> None:
+        self.opened = True
+
+    async def send_event(self, event: dict) -> None:
+        self.sent_events.append(event)
+
+    async def receive_event(self) -> NovaParsedEvent:
+        if self.output_events:
+            return self.output_events.pop(0)
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@contextmanager
+def override_nova_client(fake_client: FakeNovaClient) -> Iterator[None]:
+    app.dependency_overrides[get_nova_client_factory] = lambda: lambda: fake_client
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_nova_client_factory, None)
 
 
 def connected_event() -> dict[str, object]:
@@ -42,7 +85,7 @@ def media_event() -> dict[str, object]:
             "track": "inbound",
             "chunk": "1",
             "timestamp": "1",
-            "payload": "base64-audio-should-not-be-logged",
+            "payload": "/w==",
         },
     }
 
@@ -76,6 +119,10 @@ def test_extract_start_metadata_reads_stream_parameters() -> None:
     assert metadata.stream_sid == "MZ123"
 
 
+def test_extract_media_payload_reads_payload() -> None:
+    assert extract_media_payload(media_event()) == "/w=="
+
+
 @pytest.mark.parametrize(
     "event",
     [
@@ -104,22 +151,43 @@ def test_extract_start_metadata_rejects_malformed_start_events(event: dict[str, 
 
 
 def test_media_websocket_lifecycle_connected_started_stopped(caplog: pytest.LogCaptureFixture) -> None:
-    client = TestClient(app)
-    settings = Settings(_env_file=None)
+    async def run() -> None:
+        await active_sessions.clear()
+        client = TestClient(app)
+        settings = Settings(_env_file=None)
+        fake_nova = FakeNovaClient()
 
-    with override_settings(settings), caplog.at_level(logging.INFO, logger="app.twilio.media"):
-        with client.websocket_connect("/media") as websocket:
-            websocket.send_json(connected_event())
-            websocket.send_json(start_event())
-            websocket.send_json(media_event())
-            websocket.send_json(stop_event())
-            with pytest.raises(WebSocketDisconnect) as exc_info:
-                websocket.receive_text()
+        with override_settings(settings), override_nova_client(fake_nova), caplog.at_level(logging.INFO, logger="app.twilio.media"):
+            with client.websocket_connect("/media") as websocket:
+                websocket.send_json(connected_event())
+                websocket.send_json(start_event())
+                websocket.send_json(media_event())
+                websocket.send_json(stop_event())
+                with pytest.raises(WebSocketDisconnect) as exc_info:
+                    websocket.receive_text()
 
-    assert exc_info.value.code == 1000
+        assert exc_info.value.code == 1000
+        assert await active_sessions.count() == 0
+        assert fake_nova.opened is True
+        assert fake_nova.closed is True
+        assert [next(iter(event["event"])) for event in fake_nova.sent_events] == [
+            "sessionStart",
+            "promptStart",
+            "contentStart",
+            "textInput",
+            "contentEnd",
+            "contentStart",
+            "audioInput",
+            "contentEnd",
+            "promptEnd",
+            "sessionEnd",
+        ]
+
+    asyncio.run(run())
+
     assert "twilio_media_started" in caplog.messages
     assert "twilio_media_stopped" in caplog.messages
-    assert "base64-audio-should-not-be-logged" not in caplog.text
+    assert "/w==" not in caplog.text
     structured_fields = [getattr(record, "fields", {}) for record in caplog.records]
     assert {
         "session_id": "session-123",
@@ -156,12 +224,68 @@ def test_media_websocket_closes_when_media_arrives_before_start() -> None:
 
 
 def test_media_websocket_idle_timeout() -> None:
-    client = TestClient(app)
-    settings = Settings(_env_file=None, media_idle_timeout_seconds=0.01)
+    async def run() -> None:
+        await active_sessions.clear()
+        client = TestClient(app)
+        settings = Settings(_env_file=None, media_idle_timeout_seconds=0.01)
 
-    with override_settings(settings):
+        with override_settings(settings):
+            with client.websocket_connect("/media") as websocket:
+                with pytest.raises(WebSocketDisconnect) as exc_info:
+                    websocket.receive_text()
+
+        assert exc_info.value.code == 1001
+        assert await active_sessions.count() == 0
+
+    asyncio.run(run())
+
+
+def test_media_websocket_sends_nova_audio_back_to_twilio() -> None:
+    client = TestClient(app)
+    settings = Settings(_env_file=None)
+    fake_nova = FakeNovaClient(
+        [
+            NovaParsedEvent(
+                event_type="audio_output",
+                raw_event={"event": {"audioOutput": {}}},
+                audio_bytes=b"\x00\x00" * 240,
+                content_name="audio-1",
+            )
+        ]
+    )
+
+    with override_settings(settings), override_nova_client(fake_nova):
         with client.websocket_connect("/media") as websocket:
+            websocket.send_json(connected_event())
+            websocket.send_json(start_event())
+            outbound = websocket.receive_json()
+            websocket.send_json(stop_event())
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 websocket.receive_text()
 
-    assert exc_info.value.code == 1001
+    assert outbound["event"] == "media"
+    assert outbound["streamSid"] == "MZ123"
+    assert outbound["media"]["payload"]
+    assert exc_info.value.code == 1000
+
+
+def test_media_websocket_closes_on_bad_audio_payload() -> None:
+    async def run() -> None:
+        await active_sessions.clear()
+        client = TestClient(app)
+        settings = Settings(_env_file=None)
+        fake_nova = FakeNovaClient()
+
+        with override_settings(settings), override_nova_client(fake_nova):
+            with client.websocket_connect("/media") as websocket:
+                websocket.send_json(connected_event())
+                websocket.send_json(start_event())
+                websocket.send_json({"event": "media", "streamSid": "MZ123", "media": {"payload": "bad payload"}})
+                with pytest.raises(WebSocketDisconnect) as exc_info:
+                    websocket.receive_text()
+
+        assert exc_info.value.code == 1008
+        assert fake_nova.closed is True
+        assert await active_sessions.count() == 0
+
+    asyncio.run(run())
