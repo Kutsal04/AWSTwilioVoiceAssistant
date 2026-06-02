@@ -6,7 +6,7 @@ This repository implements a production-style real-time voice agent for a techni
 
 Before making architectural changes, read:
 
-- `docs/adr/0001-real-time-voice-agent-architecture.md`
+- `docs/0001-real-time-voice-agent-architecture.md`
 
 ## Architectural Guardrails
 

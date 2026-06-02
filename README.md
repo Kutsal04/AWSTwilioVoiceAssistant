@@ -11,7 +11,7 @@ Production-style real-time voice agent for connecting inbound Twilio Media Strea
 - Observability: structured JSON logs and CloudWatch Embedded Metric Format metrics.
 - Non-runtime operations: CLI scripts for persona seeding, transcript retrieval, and reporting.
 
-The accepted architecture is documented in `docs/adr/0001-real-time-voice-agent-architecture.md`.
+The accepted architecture is documented in `docs/0001-real-time-voice-agent-architecture.md`.
 
 ## Local Setup
 
