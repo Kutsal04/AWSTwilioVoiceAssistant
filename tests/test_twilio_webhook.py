@@ -8,6 +8,7 @@ from twilio.request_validator import RequestValidator
 from app.config import Settings, get_settings
 from app.main import app
 from app.personas import Persona, get_persona_repository
+from app.sessions import SessionRecord, get_session_repository
 from app.twilio.webhook import media_stream_url, select_persona_id
 
 
@@ -31,6 +32,27 @@ class FakePersonaRepository:
         self.personas[persona.persona_id] = persona
 
 
+class FakeSessionRepository:
+    def __init__(self, fail_creates: int = 0) -> None:
+        self.sessions: dict[str, SessionRecord] = {}
+        self.updates: list[tuple[str, dict[str, object]]] = []
+        self.fail_creates = fail_creates
+        self.create_attempts = 0
+
+    def create_session(self, record: SessionRecord) -> None:
+        self.create_attempts += 1
+        if self.fail_creates:
+            self.fail_creates -= 1
+            raise RuntimeError("create failed")
+        self.sessions[record.session_id] = record
+
+    def update_session(self, session_id: str, **updates: object) -> None:
+        self.updates.append((session_id, updates))
+
+    def get_session(self, session_id: str) -> SessionRecord | None:
+        return self.sessions.get(session_id)
+
+
 def make_persona_repository(*, appointment_active: bool = True) -> FakePersonaRepository:
     return FakePersonaRepository(
         [
@@ -48,6 +70,16 @@ def override_persona_repository(repository: FakePersonaRepository | None = None)
         yield fake_repository
     finally:
         app.dependency_overrides.pop(get_persona_repository, None)
+
+
+@contextmanager
+def override_session_repository(repository: FakeSessionRepository | None = None) -> Iterator[FakeSessionRepository]:
+    fake_repository = repository or FakeSessionRepository()
+    app.dependency_overrides[get_session_repository] = lambda: fake_repository
+    try:
+        yield fake_repository
+    finally:
+        app.dependency_overrides.pop(get_session_repository, None)
 
 
 def parse_twiml(xml: str) -> ElementTree.Element:
@@ -82,7 +114,7 @@ def test_voice_webhook_returns_connect_stream_twiml_with_parameters() -> None:
     )
     client = TestClient(app)
 
-    with override_settings(settings), override_persona_repository():
+    with override_settings(settings), override_persona_repository(), override_session_repository():
         response = client.post("/twilio/voice?persona_id=appointment_reminder", data={"CallSid": "CA123"})
 
     assert response.status_code == 200
@@ -107,11 +139,15 @@ def test_voice_webhook_uses_default_persona_when_query_parameter_is_missing() ->
     )
     client = TestClient(app)
 
-    with override_settings(settings), override_persona_repository():
+    with override_settings(settings), override_persona_repository(), override_session_repository() as sessions:
         response = client.post("/twilio/voice", data={"CallSid": "CA123"})
 
     assert response.status_code == 200
-    assert stream_parameters(parse_twiml(response.text))["persona_id"] == "warm_clinical_followup"
+    parameters = stream_parameters(parse_twiml(response.text))
+    assert parameters["persona_id"] == "warm_clinical_followup"
+    assert sessions.sessions[parameters["session_id"]].call_sid == "CA123"
+    assert sessions.sessions[parameters["session_id"]].persona_id == "warm_clinical_followup"
+    assert sessions.sessions[parameters["session_id"]].status == "starting"
 
 
 def test_voice_webhook_skips_signature_check_when_disabled() -> None:
@@ -122,7 +158,7 @@ def test_voice_webhook_skips_signature_check_when_disabled() -> None:
     )
     client = TestClient(app)
 
-    with override_settings(settings), override_persona_repository():
+    with override_settings(settings), override_persona_repository(), override_session_repository():
         response = client.post("/twilio/voice", data={"CallSid": "CA123"}, headers={"X-Twilio-Signature": "bad"})
 
     assert response.status_code == 200
@@ -140,7 +176,7 @@ def test_voice_webhook_accepts_valid_twilio_signature_when_enabled() -> None:
     signature = RequestValidator(token).compute_signature("https://voice.example.com/twilio/voice", form_data)
     client = TestClient(app)
 
-    with override_settings(settings), override_persona_repository():
+    with override_settings(settings), override_persona_repository(), override_session_repository():
         response = client.post("/twilio/voice", data=form_data, headers={"X-Twilio-Signature": signature})
 
     assert response.status_code == 200
@@ -161,7 +197,7 @@ def test_voice_webhook_accepts_valid_twilio_signature_with_query_parameter() -> 
     )
     client = TestClient(app)
 
-    with override_settings(settings), override_persona_repository():
+    with override_settings(settings), override_persona_repository(), override_session_repository():
         response = client.post(
             "/twilio/voice?persona_id=appointment_reminder",
             data=form_data,
@@ -181,7 +217,7 @@ def test_voice_webhook_rejects_invalid_twilio_signature_when_enabled() -> None:
     )
     client = TestClient(app)
 
-    with override_settings(settings), override_persona_repository():
+    with override_settings(settings), override_persona_repository(), override_session_repository():
         response = client.post("/twilio/voice", data={"CallSid": "CA123"}, headers={"X-Twilio-Signature": "bad"})
 
     assert response.status_code == 403
@@ -196,7 +232,7 @@ def test_voice_webhook_falls_back_when_requested_persona_is_missing() -> None:
     )
     client = TestClient(app)
 
-    with override_settings(settings), override_persona_repository():
+    with override_settings(settings), override_persona_repository(), override_session_repository():
         response = client.post("/twilio/voice?persona_id=missing", data={"CallSid": "CA123"})
 
     assert response.status_code == 200
@@ -213,7 +249,25 @@ def test_voice_webhook_rejects_inactive_default_persona() -> None:
     repository = make_persona_repository(appointment_active=False)
     client = TestClient(app)
 
-    with override_settings(settings), override_persona_repository(repository):
+    with override_settings(settings), override_persona_repository(repository), override_session_repository():
         response = client.post("/twilio/voice", data={"CallSid": "CA123"})
 
     assert response.status_code == 404
+
+
+def test_voice_webhook_fails_when_session_create_fails_after_retries() -> None:
+    settings = Settings(
+        _env_file=None,
+        public_base_url="https://voice.example.com",
+        verify_twilio_signature=False,
+        session_create_max_attempts=2,
+        session_write_retry_delay_seconds=0,
+    )
+    client = TestClient(app)
+    sessions = FakeSessionRepository(fail_creates=2)
+
+    with override_settings(settings), override_persona_repository(), override_session_repository(sessions):
+        response = client.post("/twilio/voice", data={"CallSid": "CA123"})
+
+    assert response.status_code == 503
+    assert sessions.create_attempts == 2

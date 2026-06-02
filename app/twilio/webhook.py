@@ -10,6 +10,13 @@ from twilio.twiml.voice_response import Connect, Stream, VoiceResponse
 from app.config import Settings, get_settings
 from app.logging import log_event
 from app.personas import PersonaRepository, PersonaSelectionError, get_persona_repository, resolve_persona
+from app.sessions import (
+    SessionPersistenceError,
+    SessionRepository,
+    create_session_with_retry,
+    get_session_repository,
+    new_session_record,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +83,13 @@ async def voice_webhook(
     persona_id: Annotated[str | None, Query()] = None,
     settings: Settings = Depends(get_settings),
     persona_repository: PersonaRepository = Depends(get_persona_repository),
+    session_repository: SessionRepository = Depends(get_session_repository),
 ) -> Response:
     await verify_twilio_signature(request, settings)
 
     session_id = str(uuid4())
+    params = await form_params(request)
+    call_sid = params.get("CallSid", "").strip() or "unknown"
     requested_persona_id = select_persona_id(persona_id, settings)
     try:
         selected_persona = await resolve_persona(
@@ -98,9 +108,38 @@ async def voice_webhook(
         )
         raise HTTPException(status_code=persona_error_status(exc), detail="Persona is not available") from exc
 
+    try:
+        await create_session_with_retry(
+            repository=session_repository,
+            record=new_session_record(
+                session_id=session_id,
+                call_sid=call_sid,
+                persona_id=selected_persona.persona_id,
+            ),
+            settings=settings,
+        )
+    except SessionPersistenceError as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "twilio_voice_session_create_failed",
+            session_id=session_id,
+            call_sid=call_sid,
+            persona_id=selected_persona.persona_id,
+            error_kind=exc.error_kind,
+        )
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Session could not be created") from exc
+
     twiml = build_voice_twiml(session_id=session_id, persona_id=selected_persona.persona_id, settings=settings)
 
-    log_event(logger, logging.INFO, "twilio_voice_webhook_accepted", session_id=session_id, persona_id=selected_persona.persona_id)
+    log_event(
+        logger,
+        logging.INFO,
+        "twilio_voice_webhook_accepted",
+        session_id=session_id,
+        call_sid=call_sid,
+        persona_id=selected_persona.persona_id,
+    )
     return Response(content=twiml, media_type="application/xml")
 
 

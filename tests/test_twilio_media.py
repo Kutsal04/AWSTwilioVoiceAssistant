@@ -10,7 +10,7 @@ from starlette.websockets import WebSocketDisconnect
 from app.config import Settings, get_settings
 from app.main import app
 from app.nova import NovaParsedEvent
-from app.sessions import active_sessions
+from app.sessions import SessionState, active_sessions
 from app.twilio.media import (
     TwilioMediaProtocolError,
     extract_media_payload,
@@ -18,7 +18,13 @@ from app.twilio.media import (
     get_nova_client_factory,
     parse_twilio_event,
 )
-from tests.test_twilio_webhook import make_persona_repository, override_persona_repository, override_settings
+from tests.test_twilio_webhook import (
+    FakeSessionRepository,
+    make_persona_repository,
+    override_persona_repository,
+    override_session_repository,
+    override_settings,
+)
 
 
 class FakeNovaClient:
@@ -160,6 +166,7 @@ def test_media_websocket_lifecycle_connected_started_stopped(caplog: pytest.LogC
         with (
             override_settings(settings),
             override_persona_repository(),
+            override_session_repository(),
             override_nova_client(fake_nova),
             caplog.at_level(logging.INFO, logger="app.twilio.media"),
         ):
@@ -208,7 +215,7 @@ def test_media_websocket_closes_on_missing_stream_parameters() -> None:
     client = TestClient(app)
     settings = Settings(_env_file=None)
 
-    with override_settings(settings):
+    with override_settings(settings), override_session_repository():
         with client.websocket_connect("/media") as websocket:
             websocket.send_json({"event": "start", "start": {"callSid": "CA123", "streamSid": "MZ123"}})
             with pytest.raises(WebSocketDisconnect) as exc_info:
@@ -221,7 +228,7 @@ def test_media_websocket_closes_when_media_arrives_before_start() -> None:
     client = TestClient(app)
     settings = Settings(_env_file=None)
 
-    with override_settings(settings):
+    with override_settings(settings), override_session_repository():
         with client.websocket_connect("/media") as websocket:
             websocket.send_json(media_event())
             with pytest.raises(WebSocketDisconnect) as exc_info:
@@ -236,7 +243,7 @@ def test_media_websocket_idle_timeout() -> None:
         client = TestClient(app)
         settings = Settings(_env_file=None, media_idle_timeout_seconds=0.01)
 
-        with override_settings(settings):
+        with override_settings(settings), override_session_repository():
             with client.websocket_connect("/media") as websocket:
                 with pytest.raises(WebSocketDisconnect) as exc_info:
                     websocket.receive_text()
@@ -261,7 +268,7 @@ def test_media_websocket_sends_nova_audio_back_to_twilio() -> None:
         ]
     )
 
-    with override_settings(settings), override_persona_repository(), override_nova_client(fake_nova):
+    with override_settings(settings), override_persona_repository(), override_session_repository(), override_nova_client(fake_nova):
         with client.websocket_connect("/media") as websocket:
             websocket.send_json(connected_event())
             websocket.send_json(start_event())
@@ -283,7 +290,7 @@ def test_media_websocket_closes_on_bad_audio_payload() -> None:
         settings = Settings(_env_file=None)
         fake_nova = FakeNovaClient()
 
-        with override_settings(settings), override_persona_repository(), override_nova_client(fake_nova):
+        with override_settings(settings), override_persona_repository(), override_session_repository(), override_nova_client(fake_nova):
             with client.websocket_connect("/media") as websocket:
                 websocket.send_json(connected_event())
                 websocket.send_json(start_event())
@@ -305,8 +312,9 @@ def test_media_websocket_closes_when_persona_is_inactive() -> None:
         settings = Settings(_env_file=None, default_persona_id="appointment_reminder")
         fake_nova = FakeNovaClient()
         personas = make_persona_repository(appointment_active=False)
+        sessions = FakeSessionRepository()
 
-        with override_settings(settings), override_persona_repository(personas), override_nova_client(fake_nova):
+        with override_settings(settings), override_persona_repository(personas), override_session_repository(sessions), override_nova_client(fake_nova):
             with client.websocket_connect("/media") as websocket:
                 websocket.send_json(connected_event())
                 websocket.send_json(start_event())
@@ -315,6 +323,32 @@ def test_media_websocket_closes_when_persona_is_inactive() -> None:
 
         assert exc_info.value.code == 1008
         assert fake_nova.opened is False
+        assert sessions.updates[-1][1]["status"] == SessionState.FAILED
+        assert sessions.updates[-1][1]["error_kind"] == "inactive_persona"
         assert await active_sessions.count() == 0
+
+    asyncio.run(run())
+
+
+def test_media_websocket_finalizes_completed_session_on_stop() -> None:
+    async def run() -> None:
+        await active_sessions.clear()
+        client = TestClient(app)
+        settings = Settings(_env_file=None)
+        fake_nova = FakeNovaClient()
+        sessions = FakeSessionRepository()
+
+        with override_settings(settings), override_persona_repository(), override_session_repository(sessions), override_nova_client(fake_nova):
+            with client.websocket_connect("/media") as websocket:
+                websocket.send_json(connected_event())
+                websocket.send_json(start_event())
+                websocket.send_json(stop_event())
+                with pytest.raises(WebSocketDisconnect):
+                    websocket.receive_text()
+
+        assert sessions.updates[0][1]["status"] == SessionState.ACTIVE
+        assert sessions.updates[-1][1]["status"] == SessionState.COMPLETED
+        assert sessions.updates[-1][1]["call_sid"] == "CA123"
+        assert sessions.updates[-1][1]["outcome_description"] == "twilio_stop"
 
     asyncio.run(run())

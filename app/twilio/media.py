@@ -11,7 +11,16 @@ from app.config import Settings, get_settings
 from app.logging import log_event
 from app.nova import NovaClient
 from app.personas import PersonaRepository, PersonaSelectionError, get_persona_repository, resolve_persona
-from app.sessions import SessionActor, active_sessions
+from app.sessions import (
+    SessionActor,
+    SessionPersistenceError,
+    SessionRepository,
+    SessionState,
+    active_sessions,
+    finalize_session_with_retry,
+    get_session_repository,
+    update_session_with_retry,
+)
 from app.twilio.bridge import NovaClientFactory, TwilioNovaBridge
 
 logger = logging.getLogger(__name__)
@@ -112,6 +121,7 @@ async def media_websocket(
     settings: Settings = Depends(get_settings),
     nova_client_factory: NovaClientFactory = Depends(get_nova_client_factory),
     persona_repository: PersonaRepository = Depends(get_persona_repository),
+    session_repository: SessionRepository = Depends(get_session_repository),
 ) -> None:
     await websocket.accept()
 
@@ -131,7 +141,7 @@ async def media_websocket(
                 )
             except TimeoutError:
                 log_event(logger, logging.WARNING, "twilio_media_idle_timeout", **_metadata_fields(metadata))
-                await _abandon_and_cleanup(actor, bridge)
+                await _abandon_and_cleanup(actor, bridge, session_repository, settings, metadata)
                 await websocket.close(code=status.WS_1001_GOING_AWAY)
                 return
 
@@ -158,6 +168,12 @@ async def media_websocket(
                 )
                 await active_sessions.create(actor)
                 await actor.activate()
+                await _update_session(
+                    repository=session_repository,
+                    settings=settings,
+                    metadata=metadata,
+                    status=SessionState.ACTIVE,
+                )
                 bridge = TwilioNovaBridge(
                     actor=actor,
                     websocket=websocket,
@@ -187,6 +203,13 @@ async def media_websocket(
                     await actor.drain()
                     await bridge.stop()
                     await actor.complete()
+                    await _finalize_session(
+                        repository=session_repository,
+                        settings=settings,
+                        metadata=metadata,
+                        status=SessionState.COMPLETED,
+                        outcome_description="twilio_stop",
+                    )
                     await active_sessions.remove(actor.session_id)
                 log_event(
                     logger,
@@ -200,7 +223,7 @@ async def media_websocket(
 
     except (TwilioMediaProtocolError, AudioConversionError) as exc:
         log_event(logger, logging.WARNING, "twilio_media_protocol_error", error_kind=type(exc).__name__, **_metadata_fields(metadata))
-        await _fail_and_cleanup(actor, bridge)
+        await _fail_and_cleanup(actor, bridge, session_repository, settings, metadata, type(exc).__name__)
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
     except PersonaSelectionError as exc:
         log_event(
@@ -210,11 +233,11 @@ async def media_websocket(
             error_kind=exc.error_kind,
             **_metadata_fields(metadata),
         )
-        await _fail_and_cleanup(actor, bridge)
+        await _fail_and_cleanup(actor, bridge, session_repository, settings, metadata, exc.error_kind)
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
     except WebSocketDisconnect:
         if started:
-            await _abandon_and_cleanup(actor, bridge)
+            await _abandon_and_cleanup(actor, bridge, session_repository, settings, metadata)
             log_event(
                 logger,
                 logging.INFO,
@@ -227,7 +250,7 @@ async def media_websocket(
             log_event(logger, logging.INFO, "twilio_media_disconnected", status="abandoned")
     except Exception as exc:
         log_event(logger, logging.ERROR, "twilio_media_bridge_error", error_kind=type(exc).__name__, **_metadata_fields(metadata))
-        await _fail_and_cleanup(actor, bridge)
+        await _fail_and_cleanup(actor, bridge, session_repository, settings, metadata, type(exc).__name__)
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
 
 
@@ -242,17 +265,106 @@ def _metadata_fields(metadata: TwilioStartMetadata | None) -> dict[str, Any]:
     }
 
 
-async def _fail_and_cleanup(actor: SessionActor | None, bridge: TwilioNovaBridge | None) -> None:
+async def _update_session(
+    *,
+    repository: SessionRepository,
+    settings: Settings,
+    metadata: TwilioStartMetadata | None,
+    status: SessionState,
+    error_kind: str | None = None,
+) -> None:
+    if metadata is None:
+        return
+    try:
+        await update_session_with_retry(
+            repository=repository,
+            session_id=metadata.session_id,
+            settings=settings,
+            status=status,
+            call_sid=metadata.call_sid,
+            error_kind=error_kind,
+        )
+    except SessionPersistenceError as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "session_update_failed",
+            error_kind=exc.error_kind,
+            **_metadata_fields(metadata),
+        )
+
+
+async def _finalize_session(
+    *,
+    repository: SessionRepository,
+    settings: Settings,
+    metadata: TwilioStartMetadata | None,
+    status: SessionState,
+    outcome_description: str,
+    error_kind: str | None = None,
+) -> None:
+    if metadata is None:
+        return
+    try:
+        await finalize_session_with_retry(
+            repository=repository,
+            session_id=metadata.session_id,
+            status=status,
+            settings=settings,
+            call_sid=metadata.call_sid,
+            outcome_description=outcome_description,
+            error_kind=error_kind,
+        )
+    except SessionPersistenceError as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "session_finalize_failed",
+            error_kind=exc.error_kind,
+            **_metadata_fields(metadata),
+        )
+
+
+async def _fail_and_cleanup(
+    actor: SessionActor | None,
+    bridge: TwilioNovaBridge | None,
+    repository: SessionRepository,
+    settings: Settings,
+    metadata: TwilioStartMetadata | None,
+    error_kind: str,
+) -> None:
     if bridge is not None:
         await bridge.stop()
     if actor is not None:
         await actor.fail()
+    await _finalize_session(
+        repository=repository,
+        settings=settings,
+        metadata=metadata,
+        status=SessionState.FAILED,
+        outcome_description="media_error",
+        error_kind=error_kind,
+    )
+    if actor is not None:
         await active_sessions.remove(actor.session_id)
 
 
-async def _abandon_and_cleanup(actor: SessionActor | None, bridge: TwilioNovaBridge | None) -> None:
+async def _abandon_and_cleanup(
+    actor: SessionActor | None,
+    bridge: TwilioNovaBridge | None,
+    repository: SessionRepository,
+    settings: Settings,
+    metadata: TwilioStartMetadata | None,
+) -> None:
     if bridge is not None:
         await bridge.stop()
     if actor is not None:
         await actor.abandon()
+        await _finalize_session(
+            repository=repository,
+            settings=settings,
+            metadata=metadata,
+            status=SessionState.ABANDONED,
+            outcome_description="twilio_disconnect",
+        )
         await active_sessions.remove(actor.session_id)

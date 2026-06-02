@@ -41,6 +41,11 @@ The current local settings are:
 - `MEDIA_IDLE_TIMEOUT_SECONDS`
 - `AUDIO_QUEUE_MAXSIZE`
 - `NOVA_STREAM_OPEN_TIMEOUT_SECONDS`
+- `SESSION_WRITE_TIMEOUT_SECONDS`
+- `SESSION_WRITE_RETRY_DELAY_SECONDS`
+- `SESSION_CREATE_MAX_ATTEMPTS`
+- `SESSION_UPDATE_MAX_ATTEMPTS`
+- `SESSION_FINALIZE_MAX_ATTEMPTS`
 - `SESSIONS_TABLE_NAME`
 - `PERSONAS_TABLE_NAME`
 - `TRANSCRIPT_TURNS_TABLE_NAME`
@@ -166,6 +171,22 @@ Skip the create-table command if the table already exists. Use `--table-name <na
 
 At call start, the selected persona prompt is loaded server-side and sent to Nova as the system prompt. Prompt text is not passed through Twilio Stream Parameters or logged.
 
+## Sessions
+
+Phase 9 persists call/session state in DynamoDB. Create the local/dev sessions table with:
+
+```bash
+aws dynamodb create-table \
+  --table-name sessions \
+  --attribute-definitions AttributeName=session_id,AttributeType=S \
+  --key-schema AttributeName=session_id,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST
+```
+
+Skip the create-table command if the table already exists. Use `SESSIONS_TABLE_NAME` to target a different table.
+
+The Twilio webhook creates a `starting` session record before returning TwiML. Session creation is critical: if the write fails after retries, the webhook returns an error instead of starting a media stream with no durable session record. When the media WebSocket starts, the record is marked `active`; Twilio `stop` finalizes it as `completed`; disconnects and error paths finalize it as `abandoned` or `failed`.
+
 ## Current Status
 
-Phase 8 adds DynamoDB-backed persona selection and CLI seeding. Session persistence, transcript persistence, CDK, and production observability integrations are added in later phases.
+Phase 9 adds DynamoDB-backed session persistence and lifecycle finalization. Transcript persistence, CDK, and production observability integrations are added in later phases.
