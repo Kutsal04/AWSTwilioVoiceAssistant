@@ -10,6 +10,7 @@ from app.audio import AudioConversionError, twilio_payload_to_nova_pcm16
 from app.config import Settings, get_settings
 from app.logging import log_event
 from app.nova import NovaClient
+from app.personas import PersonaRepository, PersonaSelectionError, get_persona_repository, resolve_persona
 from app.sessions import SessionActor, active_sessions
 from app.twilio.bridge import NovaClientFactory, TwilioNovaBridge
 
@@ -110,6 +111,7 @@ async def media_websocket(
     websocket: WebSocket,
     settings: Settings = Depends(get_settings),
     nova_client_factory: NovaClientFactory = Depends(get_nova_client_factory),
+    persona_repository: PersonaRepository = Depends(get_persona_repository),
 ) -> None:
     await websocket.accept()
 
@@ -143,10 +145,15 @@ async def media_websocket(
 
             if event_name == "start":
                 metadata = extract_start_metadata(event)
+                persona = await resolve_persona(
+                    requested_persona_id=metadata.persona_id,
+                    settings=settings,
+                    repository=persona_repository,
+                )
                 actor = SessionActor(
                     session_id=metadata.session_id,
                     call_sid=metadata.call_sid,
-                    persona_id=metadata.persona_id,
+                    persona_id=persona.persona_id,
                     audio_queue_maxsize=settings.audio_queue_maxsize,
                 )
                 await active_sessions.create(actor)
@@ -157,6 +164,7 @@ async def media_websocket(
                     stream_sid=metadata.stream_sid,
                     settings=settings,
                     nova_client=nova_client_factory(),
+                    system_prompt=persona.system_prompt,
                 )
                 await bridge.start()
                 started = True
@@ -192,6 +200,16 @@ async def media_websocket(
 
     except (TwilioMediaProtocolError, AudioConversionError) as exc:
         log_event(logger, logging.WARNING, "twilio_media_protocol_error", error_kind=type(exc).__name__, **_metadata_fields(metadata))
+        await _fail_and_cleanup(actor, bridge)
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+    except PersonaSelectionError as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "twilio_media_persona_rejected",
+            error_kind=exc.error_kind,
+            **_metadata_fields(metadata),
+        )
         await _fail_and_cleanup(actor, bridge)
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
     except WebSocketDisconnect:

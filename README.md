@@ -34,13 +34,18 @@ The current local settings are:
 - `ENV_NAME`
 - `PUBLIC_BASE_URL`
 - `DEFAULT_PERSONA_ID`
+- `PERSONA_LOOKUP_TIMEOUT_SECONDS`
+- `PERSONA_LOOKUP_FALLBACK_ENABLED`
 - `VERIFY_TWILIO_SIGNATURE`
 - `TWILIO_AUTH_TOKEN`
 - `MEDIA_IDLE_TIMEOUT_SECONDS`
+- `AUDIO_QUEUE_MAXSIZE`
+- `NOVA_STREAM_OPEN_TIMEOUT_SECONDS`
 - `SESSIONS_TABLE_NAME`
 - `PERSONAS_TABLE_NAME`
 - `TRANSCRIPT_TURNS_TABLE_NAME`
 - `BEDROCK_REGION`
+- `NOVA_MODEL_ID`
 
 `Settings` loads these from environment variables and `.env` during local development.
 
@@ -83,6 +88,8 @@ https://<ngrok-host>/twilio/voice
 ```
 
 Pass a persona for testing by adding `?persona_id=appointment_reminder`; otherwise the service falls back to `DEFAULT_PERSONA_ID`.
+
+The webhook validates the selected persona against the `personas` table before returning TwiML. If `PERSONA_LOOKUP_FALLBACK_ENABLED=true`, a missing or inactive requested persona falls back to `DEFAULT_PERSONA_ID`; if the default persona is unavailable, the webhook fails clearly instead of starting a call with an unknown prompt.
 
 `VERIFY_TWILIO_SIGNATURE=false` is suitable for local ngrok development. For non-local `ENV_NAME` values, signature verification defaults on unless explicitly disabled, and `TWILIO_AUTH_TOKEN` must be configured.
 
@@ -139,6 +146,26 @@ Phase 7 connects Twilio Media Streams to one Nova 2 Sonic stream per call. Twili
 
 Manual Phase 7 validation requires the local FastAPI service, ngrok, a Twilio inbound call, AWS credentials, and Nova 2 Sonic model access. Success means one call can complete at least one caller-speaks, agent-responds turn, caller hangup is handled cleanly, and logs show lifecycle identifiers without audio payloads or transcript text.
 
+## Personas
+
+Phase 8 stores configurable personas in DynamoDB. Seed or update the required local/dev personas with:
+
+```bash
+aws dynamodb create-table \
+  --table-name personas \
+  --attribute-definitions AttributeName=persona_id,AttributeType=S \
+  --key-schema AttributeName=persona_id,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST
+```
+
+```bash
+python scripts/seed_personas.py
+```
+
+Skip the create-table command if the table already exists. Use `--table-name <name>` to override `PERSONAS_TABLE_NAME`. The script upserts `warm_clinical_followup` and `appointment_reminder` and does not print prompt text.
+
+At call start, the selected persona prompt is loaded server-side and sent to Nova as the system prompt. Prompt text is not passed through Twilio Stream Parameters or logged.
+
 ## Current Status
 
-Phase 7 establishes the first local Twilio-to-Nova audio bridge. DynamoDB, CDK, and production observability integrations are added in later phases.
+Phase 8 adds DynamoDB-backed persona selection and CLI seeding. Session persistence, transcript persistence, CDK, and production observability integrations are added in later phases.

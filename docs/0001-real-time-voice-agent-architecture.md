@@ -147,6 +147,8 @@ Persona selection will use `persona_id` from the Twilio webhook query parameter,
 
 The tradeoff is that Twilio webhook configuration or demo URLs must be managed carefully. The `persona_id` must be validated against DynamoDB before use.
 
+Persona records live in the `personas` table and include the system prompt, display name, active flag, version, and schema version. The webhook validates and normalizes the selected `persona_id` before returning TwiML; the media WebSocket loads the selected prompt server-side before opening Nova. Prompt text is not passed through Twilio Stream Parameters or written to logs.
+
 ## Consequences
 
 ### Positive Consequences

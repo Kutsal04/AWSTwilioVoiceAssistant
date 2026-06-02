@@ -9,6 +9,7 @@ from twilio.twiml.voice_response import Connect, Stream, VoiceResponse
 
 from app.config import Settings, get_settings
 from app.logging import log_event
+from app.personas import PersonaRepository, PersonaSelectionError, get_persona_repository, resolve_persona
 
 logger = logging.getLogger(__name__)
 
@@ -74,12 +75,36 @@ async def voice_webhook(
     request: Request,
     persona_id: Annotated[str | None, Query()] = None,
     settings: Settings = Depends(get_settings),
+    persona_repository: PersonaRepository = Depends(get_persona_repository),
 ) -> Response:
     await verify_twilio_signature(request, settings)
 
     session_id = str(uuid4())
-    selected_persona_id = select_persona_id(persona_id, settings)
-    twiml = build_voice_twiml(session_id=session_id, persona_id=selected_persona_id, settings=settings)
+    requested_persona_id = select_persona_id(persona_id, settings)
+    try:
+        selected_persona = await resolve_persona(
+            requested_persona_id=requested_persona_id,
+            settings=settings,
+            repository=persona_repository,
+        )
+    except PersonaSelectionError as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "twilio_voice_persona_rejected",
+            session_id=session_id,
+            persona_id=requested_persona_id,
+            error_kind=exc.error_kind,
+        )
+        raise HTTPException(status_code=persona_error_status(exc), detail="Persona is not available") from exc
 
-    log_event(logger, logging.INFO, "twilio_voice_webhook_accepted", session_id=session_id, persona_id=selected_persona_id)
+    twiml = build_voice_twiml(session_id=session_id, persona_id=selected_persona.persona_id, settings=settings)
+
+    log_event(logger, logging.INFO, "twilio_voice_webhook_accepted", session_id=session_id, persona_id=selected_persona.persona_id)
     return Response(content=twiml, media_type="application/xml")
+
+
+def persona_error_status(exc: PersonaSelectionError) -> int:
+    if exc.error_kind in {"missing_persona", "inactive_persona"}:
+        return status.HTTP_404_NOT_FOUND
+    return status.HTTP_503_SERVICE_UNAVAILABLE

@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     env_name: str = Field(default="local", min_length=1)
     public_base_url: str = Field(default="http://localhost:8080", min_length=1)
     default_persona_id: str = Field(default="warm_clinical_followup", min_length=1)
+    persona_lookup_timeout_seconds: float = Field(default=2.0, gt=0)
+    persona_lookup_fallback_enabled: bool = True
     verify_twilio_signature: bool = False
     twilio_auth_token: str | None = None
     media_idle_timeout_seconds: float = Field(default=30.0, gt=0)

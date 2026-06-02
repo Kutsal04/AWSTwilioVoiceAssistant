@@ -10,6 +10,8 @@ def test_settings_defaults_without_env_file() -> None:
     assert settings.env_name == "local"
     assert settings.public_base_url == "http://localhost:8080"
     assert settings.default_persona_id == "warm_clinical_followup"
+    assert settings.persona_lookup_timeout_seconds == 2.0
+    assert settings.persona_lookup_fallback_enabled is True
     assert settings.verify_twilio_signature is False
     assert settings.twilio_auth_token is None
     assert settings.media_idle_timeout_seconds == 30.0

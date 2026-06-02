@@ -18,7 +18,7 @@ from app.twilio.media import (
     get_nova_client_factory,
     parse_twilio_event,
 )
-from tests.test_twilio_webhook import override_settings
+from tests.test_twilio_webhook import make_persona_repository, override_persona_repository, override_settings
 
 
 class FakeNovaClient:
@@ -157,7 +157,12 @@ def test_media_websocket_lifecycle_connected_started_stopped(caplog: pytest.LogC
         settings = Settings(_env_file=None)
         fake_nova = FakeNovaClient()
 
-        with override_settings(settings), override_nova_client(fake_nova), caplog.at_level(logging.INFO, logger="app.twilio.media"):
+        with (
+            override_settings(settings),
+            override_persona_repository(),
+            override_nova_client(fake_nova),
+            caplog.at_level(logging.INFO, logger="app.twilio.media"),
+        ):
             with client.websocket_connect("/media") as websocket:
                 websocket.send_json(connected_event())
                 websocket.send_json(start_event())
@@ -182,6 +187,8 @@ def test_media_websocket_lifecycle_connected_started_stopped(caplog: pytest.LogC
             "promptEnd",
             "sessionEnd",
         ]
+        text_inputs = [event["event"]["textInput"] for event in fake_nova.sent_events if "textInput" in event["event"]]
+        assert text_inputs[0]["content"] == "appointment prompt"
 
     asyncio.run(run())
 
@@ -254,7 +261,7 @@ def test_media_websocket_sends_nova_audio_back_to_twilio() -> None:
         ]
     )
 
-    with override_settings(settings), override_nova_client(fake_nova):
+    with override_settings(settings), override_persona_repository(), override_nova_client(fake_nova):
         with client.websocket_connect("/media") as websocket:
             websocket.send_json(connected_event())
             websocket.send_json(start_event())
@@ -276,7 +283,7 @@ def test_media_websocket_closes_on_bad_audio_payload() -> None:
         settings = Settings(_env_file=None)
         fake_nova = FakeNovaClient()
 
-        with override_settings(settings), override_nova_client(fake_nova):
+        with override_settings(settings), override_persona_repository(), override_nova_client(fake_nova):
             with client.websocket_connect("/media") as websocket:
                 websocket.send_json(connected_event())
                 websocket.send_json(start_event())
@@ -286,6 +293,28 @@ def test_media_websocket_closes_on_bad_audio_payload() -> None:
 
         assert exc_info.value.code == 1008
         assert fake_nova.closed is True
+        assert await active_sessions.count() == 0
+
+    asyncio.run(run())
+
+
+def test_media_websocket_closes_when_persona_is_inactive() -> None:
+    async def run() -> None:
+        await active_sessions.clear()
+        client = TestClient(app)
+        settings = Settings(_env_file=None, default_persona_id="appointment_reminder")
+        fake_nova = FakeNovaClient()
+        personas = make_persona_repository(appointment_active=False)
+
+        with override_settings(settings), override_persona_repository(personas), override_nova_client(fake_nova):
+            with client.websocket_connect("/media") as websocket:
+                websocket.send_json(connected_event())
+                websocket.send_json(start_event())
+                with pytest.raises(WebSocketDisconnect) as exc_info:
+                    websocket.receive_text()
+
+        assert exc_info.value.code == 1008
+        assert fake_nova.opened is False
         assert await active_sessions.count() == 0
 
     asyncio.run(run())
