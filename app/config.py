@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     personas_table_name: str = Field(default="personas", min_length=1)
     transcript_turns_table_name: str = Field(default="transcript_turns", min_length=1)
     bedrock_region: str = Field(default="us-east-1", min_length=1)
+    nova_model_id: str = Field(default="amazon.nova-2-sonic-v1:0", min_length=1)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -31,6 +32,7 @@ class Settings(BaseSettings):
         "personas_table_name",
         "transcript_turns_table_name",
         "bedrock_region",
+        "nova_model_id",
     )
     @classmethod
     def strip_and_validate_non_empty(cls, value: str) -> str:

@@ -17,6 +17,7 @@ def test_settings_defaults_without_env_file() -> None:
     assert settings.personas_table_name == "personas"
     assert settings.transcript_turns_table_name == "transcript_turns"
     assert settings.bedrock_region == "us-east-1"
+    assert settings.nova_model_id == "amazon.nova-2-sonic-v1:0"
 
 
 def test_signature_verification_defaults_on_for_deployed_envs() -> None:

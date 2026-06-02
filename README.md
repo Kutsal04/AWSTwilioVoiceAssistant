@@ -102,10 +102,37 @@ During the Phase 3 manual checkpoint, call the Twilio number through ngrok and c
 
 Phase 4 audio conversion helpers live under `app/audio`. They convert Twilio base64 μ-law 8 kHz frames to Nova PCM16 16 kHz audio, and Nova PCM16 16 kHz audio back to Twilio base64 μ-law 8 kHz payloads. The module is pure Python and independent of Twilio, Nova, and AWS clients.
 
+## Nova Sonic Spike
+
+Phase 6 adds an isolated Nova 2 Sonic adapter under `app/nova` and a manual validation script:
+
+```bash
+python scripts/nova_sonic_spike.py
+```
+
+The script opens a Bedrock bidirectional stream, sends initialization events, and closes the stream. With a raw 16 kHz mono PCM16 file, it can also send controlled audio:
+
+```bash
+python scripts/nova_sonic_spike.py --pcm16-file sample.pcm
+```
+
+Required local prerequisites:
+
+- AWS credentials available through the standard environment credential chain.
+- Bedrock model access for `amazon.nova-2-sonic-v1:0`.
+- `BEDROCK_REGION` set to a region where your account has Nova 2 Sonic access.
+
+Current API notes from AWS documentation:
+
+- Nova 2 Sonic uses Bedrock Runtime `InvokeModelWithBidirectionalStream`.
+- The Python SDK path is experimental and uses `aws-sdk-bedrock-runtime`.
+- Input audio is PCM16 16 kHz mono, base64 encoded in `audioInput` events.
+- Output audio is PCM16 24 kHz mono, base64 encoded in `audioOutput` events.
+
 ## Session Actors
 
 Phase 5 introduces one process-local `SessionActor` per call. Each actor owns its lifecycle state, inbound and outbound bounded audio queues, cancellation task set, and in-memory transcript buffer. When an audio queue is full, the actor deterministically drops the oldest stale frame and logs an operational `audio_frame_dropped` event without caller content.
 
 ## Current Status
 
-Phase 5 establishes per-call session actors and a process-local active session registry. Nova streaming, DynamoDB, CDK, and production observability integrations are added in later phases.
+Phase 6 establishes the isolated Nova 2 Sonic event/client boundary. The Twilio-to-Nova bridge, DynamoDB, CDK, and production observability integrations are added in later phases.
