@@ -102,6 +102,10 @@ During the Phase 3 manual checkpoint, call the Twilio number through ngrok and c
 
 Phase 4 audio conversion helpers live under `app/audio`. They convert Twilio base64 μ-law 8 kHz frames to Nova PCM16 16 kHz audio, and Nova PCM16 16 kHz audio back to Twilio base64 μ-law 8 kHz payloads. The module is pure Python and independent of Twilio, Nova, and AWS clients.
 
+## Session Actors
+
+Phase 5 introduces one process-local `SessionActor` per call. Each actor owns its lifecycle state, inbound and outbound bounded audio queues, cancellation task set, and in-memory transcript buffer. When an audio queue is full, the actor deterministically drops the oldest stale frame and logs an operational `audio_frame_dropped` event without caller content.
+
 ## Current Status
 
-Phase 4 establishes Twilio/Nova audio codec and resampling helpers. Nova streaming, DynamoDB, CDK, and production observability integrations are added in later phases.
+Phase 5 establishes per-call session actors and a process-local active session registry. Nova streaming, DynamoDB, CDK, and production observability integrations are added in later phases.
