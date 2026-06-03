@@ -1,0 +1,8 @@
+{
+  "app": "python app.py",
+  "context": {
+    "defaultPersonaId": "warm_clinical_followup",
+    "bedrockRegion": "us-east-1",
+    "novaModelId": "amazon.nova-2-sonic-v1:0"
+  }
+}

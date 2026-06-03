@@ -247,6 +247,73 @@ Phase 13 makes failure paths explicit and bounded. Persona lookup, session write
 
 If Nova response events stall, the bridge logs `nova_response_timeout` and keeps the call process alive. If Nova receive fails, the bridge logs `nova_receive_error` and avoids crashing the process. Twilio disconnects remove active actors from the process-local registry, and service shutdown uses FastAPI lifespan cleanup to abandon/finalize any active sessions as `abandoned` with `service_shutdown` where practical.
 
+## Container
+
+Phase 14 packages the FastAPI service with Python 3.12 slim and runtime-only dependencies:
+
+```bash
+docker build -t aws-twilio-voice-assistant:local .
+```
+
+Run the container locally:
+
+```bash
+docker run --rm -p 8080:8080 --env-file .env aws-twilio-voice-assistant:local
+```
+
+Verify health:
+
+```bash
+curl http://localhost:8080/health
+```
+
+The container command is `uvicorn app.main:app --host 0.0.0.0 --port 8080`, and the image includes a Docker health check against `/health`.
+
+## CDK Deployment
+
+Phase 15 adds one environment-parameterized CDK stack under `infra/`. It creates:
+
+- DynamoDB tables for sessions, personas, and transcript turns.
+- ECS Fargate service running the Docker image from this repository.
+- Public ALB and target group with `/health` checks.
+- CloudWatch log group and an `ErrorCount` alarm.
+- Least-privilege task permissions for DynamoDB, Bedrock Runtime, SSM config reads, and optional Twilio secret reads.
+- SSM parameters under `/voice-agent/<env>/` for deployed non-secret config.
+
+Install the infrastructure dependencies once:
+
+```bash
+pip install -r infra/requirements.txt
+```
+
+Synthesize the stack:
+
+```bash
+cd infra
+npx cdk synth -c env=dev
+```
+
+Deploy and destroy in a dev account:
+
+```bash
+npx cdk deploy -c env=dev
+npx cdk destroy -c env=dev
+```
+
+Useful context parameters:
+
+```bash
+npx cdk deploy \
+  -c env=dev \
+  -c defaultPersonaId=warm_clinical_followup \
+  -c bedrockRegion=us-east-1 \
+  -c twilioAuthTokenSecretArn=arn:aws:secretsmanager:us-east-1:123456789012:secret:twilio-auth-token-AbCdEf \
+  -c domainName=voice.example.com \
+  -c certificateArn=arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000
+```
+
+`ENV_NAME` is non-local in ECS, so Twilio signature verification is enabled. Provide `twilioAuthTokenSecretArn` before using the deployed Twilio webhook. Without a custom domain/certificate, the stack exposes HTTP through the ALB for health checks; production Twilio media should use an HTTPS/WSS domain backed by ACM.
+
 ## Current Status
 
-Phase 13 adds bounded reliability handling for known runtime failure paths. Containerization, CDK infrastructure, and production alarms are added in later phases.
+Phase 15 adds CDK infrastructure for the deployed ECS/Fargate path. The next phase validates a deployed end-to-end call.

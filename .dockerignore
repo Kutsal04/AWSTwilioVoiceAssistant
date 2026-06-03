@@ -1,0 +1,13 @@
+.env
+.git
+.pytest_cache
+.venv
+__pycache__/
+*.py[cod]
+Dockerfile
+sample.pcm
+tests/
+docs/
+infra/
+scripts/
+tasks.md
