@@ -34,6 +34,10 @@ class NovaParsedEvent:
     raw_event: dict[str, Any]
     role: str | None = None
     content: str | None = None
+    confidence: float | None = None
+    generation_stage: str | None = None
+    content_type: str | None = None
+    stop_reason: str | None = None
     audio_bytes: bytes | None = None
     content_name: str | None = None
 
@@ -184,7 +188,9 @@ def parse_nova_event_bytes(payload: bytes) -> NovaParsedEvent:
             event_type="content_start",
             raw_event=raw,
             role=_string_or_none(content_start.get("role")),
-            content_name=_string_or_none(content_start.get("contentName")),
+            generation_stage=_generation_stage(content_start),
+            content_type=_string_or_none(content_start.get("type")),
+            content_name=_content_identifier(content_start),
         )
     if "textOutput" in event:
         text_output = event["textOutput"]
@@ -192,7 +198,8 @@ def parse_nova_event_bytes(payload: bytes) -> NovaParsedEvent:
             event_type="text_output",
             raw_event=raw,
             content=_string_or_none(text_output.get("content")),
-            content_name=_string_or_none(text_output.get("contentName")),
+            confidence=_float_or_none(text_output.get("confidence")),
+            content_name=_content_identifier(text_output),
         )
     if "audioOutput" in event:
         audio_output = event["audioOutput"]
@@ -207,14 +214,16 @@ def parse_nova_event_bytes(payload: bytes) -> NovaParsedEvent:
             event_type="audio_output",
             raw_event=raw,
             audio_bytes=audio_bytes,
-            content_name=_string_or_none(audio_output.get("contentName")),
+            content_name=_content_identifier(audio_output),
         )
     if "contentEnd" in event:
         content_end = event["contentEnd"]
         return NovaParsedEvent(
             event_type="content_end",
             raw_event=raw,
-            content_name=_string_or_none(content_end.get("contentName")),
+            content_type=_string_or_none(content_end.get("type")),
+            stop_reason=_string_or_none(content_end.get("stopReason")),
+            content_name=_content_identifier(content_end),
         )
     if "promptEnd" in event:
         return NovaParsedEvent(event_type="prompt_end", raw_event=raw)
@@ -230,4 +239,29 @@ def parse_nova_event_bytes(payload: bytes) -> NovaParsedEvent:
 def _string_or_none(value: Any) -> str | None:
     if isinstance(value, str):
         return value
+    return None
+
+
+def _content_identifier(event_payload: dict[str, Any]) -> str | None:
+    return _string_or_none(event_payload.get("contentName")) or _string_or_none(event_payload.get("contentId"))
+
+
+def _generation_stage(event_payload: dict[str, Any]) -> str | None:
+    additional_model_fields = _string_or_none(event_payload.get("additionalModelFields"))
+    if additional_model_fields is None:
+        return None
+    try:
+        decoded = json.loads(additional_model_fields)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    return _string_or_none(decoded.get("generationStage"))
+
+
+def _float_or_none(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
     return None

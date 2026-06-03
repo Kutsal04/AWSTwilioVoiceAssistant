@@ -11,6 +11,7 @@ from app.config import Settings, get_settings
 from app.main import app
 from app.nova import NovaParsedEvent
 from app.sessions import SessionState, active_sessions
+from app.transcripts import TranscriptRepository, TranscriptTurn, get_transcript_repository
 from app.twilio.media import (
     TwilioMediaProtocolError,
     extract_media_payload,
@@ -50,6 +51,21 @@ class FakeNovaClient:
         self.closed = True
 
 
+class FakeTranscriptRepository:
+    def __init__(self, fail_writes: int = 0) -> None:
+        self.turns: list[TranscriptTurn] = []
+        self.fail_writes = fail_writes
+
+    def put_turn(self, turn: TranscriptTurn) -> None:
+        if self.fail_writes:
+            self.fail_writes -= 1
+            raise RuntimeError("put failed")
+        self.turns.append(turn)
+
+    def list_turns(self, session_id: str) -> list[TranscriptTurn]:
+        return [turn for turn in self.turns if turn.session_id == session_id]
+
+
 @contextmanager
 def override_nova_client(fake_client: FakeNovaClient) -> Iterator[None]:
     app.dependency_overrides[get_nova_client_factory] = lambda: lambda: fake_client
@@ -57,6 +73,16 @@ def override_nova_client(fake_client: FakeNovaClient) -> Iterator[None]:
         yield
     finally:
         app.dependency_overrides.pop(get_nova_client_factory, None)
+
+
+@contextmanager
+def override_transcript_repository(repository: TranscriptRepository | None = None) -> Iterator[TranscriptRepository]:
+    fake_repository = repository or FakeTranscriptRepository()
+    app.dependency_overrides[get_transcript_repository] = lambda: fake_repository
+    try:
+        yield fake_repository
+    finally:
+        app.dependency_overrides.pop(get_transcript_repository, None)
 
 
 def connected_event() -> dict[str, object]:
@@ -167,6 +193,7 @@ def test_media_websocket_lifecycle_connected_started_stopped(caplog: pytest.LogC
             override_settings(settings),
             override_persona_repository(),
             override_session_repository(),
+            override_transcript_repository(),
             override_nova_client(fake_nova),
             caplog.at_level(logging.INFO, logger="app.twilio.media"),
         ):
@@ -215,7 +242,7 @@ def test_media_websocket_closes_on_missing_stream_parameters() -> None:
     client = TestClient(app)
     settings = Settings(_env_file=None)
 
-    with override_settings(settings), override_session_repository():
+    with override_settings(settings), override_session_repository(), override_transcript_repository():
         with client.websocket_connect("/media") as websocket:
             websocket.send_json({"event": "start", "start": {"callSid": "CA123", "streamSid": "MZ123"}})
             with pytest.raises(WebSocketDisconnect) as exc_info:
@@ -228,7 +255,7 @@ def test_media_websocket_closes_when_media_arrives_before_start() -> None:
     client = TestClient(app)
     settings = Settings(_env_file=None)
 
-    with override_settings(settings), override_session_repository():
+    with override_settings(settings), override_session_repository(), override_transcript_repository():
         with client.websocket_connect("/media") as websocket:
             websocket.send_json(media_event())
             with pytest.raises(WebSocketDisconnect) as exc_info:
@@ -243,7 +270,7 @@ def test_media_websocket_idle_timeout() -> None:
         client = TestClient(app)
         settings = Settings(_env_file=None, media_idle_timeout_seconds=0.01)
 
-        with override_settings(settings), override_session_repository():
+        with override_settings(settings), override_session_repository(), override_transcript_repository():
             with client.websocket_connect("/media") as websocket:
                 with pytest.raises(WebSocketDisconnect) as exc_info:
                     websocket.receive_text()
@@ -268,7 +295,7 @@ def test_media_websocket_sends_nova_audio_back_to_twilio() -> None:
         ]
     )
 
-    with override_settings(settings), override_persona_repository(), override_session_repository(), override_nova_client(fake_nova):
+    with override_settings(settings), override_persona_repository(), override_session_repository(), override_transcript_repository(), override_nova_client(fake_nova):
         with client.websocket_connect("/media") as websocket:
             websocket.send_json(connected_event())
             websocket.send_json(start_event())
@@ -290,7 +317,7 @@ def test_media_websocket_closes_on_bad_audio_payload() -> None:
         settings = Settings(_env_file=None)
         fake_nova = FakeNovaClient()
 
-        with override_settings(settings), override_persona_repository(), override_session_repository(), override_nova_client(fake_nova):
+        with override_settings(settings), override_persona_repository(), override_session_repository(), override_transcript_repository(), override_nova_client(fake_nova):
             with client.websocket_connect("/media") as websocket:
                 websocket.send_json(connected_event())
                 websocket.send_json(start_event())
@@ -314,7 +341,7 @@ def test_media_websocket_closes_when_persona_is_inactive() -> None:
         personas = make_persona_repository(appointment_active=False)
         sessions = FakeSessionRepository()
 
-        with override_settings(settings), override_persona_repository(personas), override_session_repository(sessions), override_nova_client(fake_nova):
+        with override_settings(settings), override_persona_repository(personas), override_session_repository(sessions), override_transcript_repository(), override_nova_client(fake_nova):
             with client.websocket_connect("/media") as websocket:
                 websocket.send_json(connected_event())
                 websocket.send_json(start_event())
@@ -338,7 +365,7 @@ def test_media_websocket_finalizes_completed_session_on_stop() -> None:
         fake_nova = FakeNovaClient()
         sessions = FakeSessionRepository()
 
-        with override_settings(settings), override_persona_repository(), override_session_repository(sessions), override_nova_client(fake_nova):
+        with override_settings(settings), override_persona_repository(), override_session_repository(sessions), override_transcript_repository(), override_nova_client(fake_nova):
             with client.websocket_connect("/media") as websocket:
                 websocket.send_json(connected_event())
                 websocket.send_json(start_event())
@@ -352,3 +379,122 @@ def test_media_websocket_finalizes_completed_session_on_stop() -> None:
         assert sessions.updates[-1][1]["outcome_description"] == "twilio_stop"
 
     asyncio.run(run())
+
+
+def test_media_websocket_persists_finalized_nova_transcript_turn_without_logging_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = TestClient(app)
+    settings = Settings(_env_file=None)
+    transcript_repository = FakeTranscriptRepository()
+    fake_nova = FakeNovaClient(
+        [
+            NovaParsedEvent(
+                event_type="content_start",
+                raw_event={"event": {"contentStart": {"role": "ASSISTANT", "contentId": "assistant-1"}}},
+                role="ASSISTANT",
+                generation_stage="FINAL",
+                content_type="TEXT",
+                content_name="assistant-1",
+            ),
+            NovaParsedEvent(
+                event_type="text_output",
+                raw_event={"event": {"textOutput": {"contentId": "assistant-1", "content": "Sensitive answer."}}},
+                content="Sensitive ",
+                content_name="assistant-1",
+            ),
+            NovaParsedEvent(
+                event_type="text_output",
+                raw_event={"event": {"textOutput": {"contentId": "assistant-1", "content": "answer."}}},
+                content="answer.",
+                content_name="assistant-1",
+            ),
+            NovaParsedEvent(
+                event_type="content_end",
+                raw_event={"event": {"contentEnd": {"contentId": "assistant-1"}}},
+                content_name="assistant-1",
+            ),
+            NovaParsedEvent(
+                event_type="audio_output",
+                raw_event={"event": {"audioOutput": {}}},
+                audio_bytes=b"\x00\x00" * 240,
+                content_name="audio-1",
+            ),
+        ]
+    )
+
+    with (
+        override_settings(settings),
+        override_persona_repository(),
+        override_session_repository(),
+        override_transcript_repository(transcript_repository),
+        override_nova_client(fake_nova),
+        caplog.at_level(logging.INFO),
+    ):
+        with client.websocket_connect("/media") as websocket:
+            websocket.send_json(connected_event())
+            websocket.send_json(start_event())
+            websocket.receive_json()
+            websocket.send_json(stop_event())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+    assert len(transcript_repository.turns) == 1
+    turn = transcript_repository.turns[0]
+    assert turn.session_id == "session-123"
+    assert turn.turn_index == 0
+    assert turn.speaker == "assistant"
+    assert turn.text == "Sensitive answer."
+    assert "Sensitive answer." not in caplog.text
+
+
+def test_media_websocket_does_not_persist_speculative_nova_transcript_turn() -> None:
+    client = TestClient(app)
+    settings = Settings(_env_file=None)
+    transcript_repository = FakeTranscriptRepository()
+    fake_nova = FakeNovaClient(
+        [
+            NovaParsedEvent(
+                event_type="content_start",
+                raw_event={"event": {"contentStart": {"role": "ASSISTANT", "contentId": "assistant-1"}}},
+                role="ASSISTANT",
+                generation_stage="SPECULATIVE",
+                content_type="TEXT",
+                content_name="assistant-1",
+            ),
+            NovaParsedEvent(
+                event_type="text_output",
+                raw_event={"event": {"textOutput": {"contentId": "assistant-1", "content": "Preview."}}},
+                content="Preview.",
+                content_name="assistant-1",
+            ),
+            NovaParsedEvent(
+                event_type="content_end",
+                raw_event={"event": {"contentEnd": {"contentId": "assistant-1"}}},
+                content_name="assistant-1",
+            ),
+            NovaParsedEvent(
+                event_type="audio_output",
+                raw_event={"event": {"audioOutput": {}}},
+                audio_bytes=b"\x00\x00" * 240,
+                content_name="audio-1",
+            ),
+        ]
+    )
+
+    with (
+        override_settings(settings),
+        override_persona_repository(),
+        override_session_repository(),
+        override_transcript_repository(transcript_repository),
+        override_nova_client(fake_nova),
+    ):
+        with client.websocket_connect("/media") as websocket:
+            websocket.send_json(connected_event())
+            websocket.send_json(start_event())
+            websocket.receive_json()
+            websocket.send_json(stop_event())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+    assert transcript_repository.turns == []

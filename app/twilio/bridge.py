@@ -21,6 +21,12 @@ from app.nova import (
     system_prompt_events,
 )
 from app.sessions import SessionActor
+from app.transcripts import (
+    TranscriptPersistenceError,
+    TranscriptRepository,
+    TranscriptTurnBuffer,
+    put_transcript_turn_with_retry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +61,7 @@ class TwilioNovaBridge:
         stream_sid: str,
         settings: Settings,
         nova_client: NovaStreamClient,
+        transcript_repository: TranscriptRepository,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     ) -> None:
         self.actor = actor
@@ -62,7 +69,9 @@ class TwilioNovaBridge:
         self.stream_sid = stream_sid
         self.settings = settings
         self.nova_client = nova_client
+        self.transcript_repository = transcript_repository
         self.system_prompt = system_prompt
+        self.transcript_buffer = TranscriptTurnBuffer(session_id=actor.session_id)
         self.prompt_name = str(uuid4())
         self.system_content_name = str(uuid4())
         self.audio_content_name = str(uuid4())
@@ -148,6 +157,7 @@ class TwilioNovaBridge:
             event = await self.nova_client.receive_event()
 
             self._nova_events += 1
+            await self._handle_transcript_event(event)
             if event.event_type != "audio_output" or event.audio_bytes is None:
                 continue
 
@@ -158,6 +168,36 @@ class TwilioNovaBridge:
                     "streamSid": self.stream_sid,
                     "media": {"payload": payload},
                 }
+            )
+
+    async def _handle_transcript_event(self, event: NovaParsedEvent) -> None:
+        turn = self.transcript_buffer.handle_nova_event(event)
+        if turn is None:
+            return
+
+        self.actor.transcript_buffer.finalized_turns.append(
+            {
+                "turn_index": turn.turn_index,
+                "speaker": turn.speaker,
+                "transcript_item_id": turn.transcript_item_id,
+            }
+        )
+        try:
+            await put_transcript_turn_with_retry(
+                repository=self.transcript_repository,
+                turn=turn,
+                settings=self.settings,
+            )
+        except TranscriptPersistenceError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "transcript_turn_persist_failed",
+                session_id=self.actor.session_id,
+                call_sid=self.actor.call_sid,
+                persona_id=self.actor.persona_id,
+                turn_index=turn.turn_index,
+                error_kind=exc.error_kind,
             )
 
     async def _wait_or_cancel(self, task: asyncio.Task | None, *, timeout: float, task_name: str) -> None:

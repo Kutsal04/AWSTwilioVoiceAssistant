@@ -65,33 +65,55 @@ def test_event_to_bytes_outputs_compact_json() -> None:
 
 def test_parse_content_start_event() -> None:
     parsed = parse_nova_event_bytes(
-        b'{"event":{"contentStart":{"role":"ASSISTANT","contentName":"content-1"}}}'
+        b'{"event":{"contentStart":{"role":"ASSISTANT","contentId":"content-1","type":"TEXT","additionalModelFields":"{\\"generationStage\\":\\"FINAL\\"}"}}}'
     )
 
     assert parsed.event_type == "content_start"
     assert parsed.role == "ASSISTANT"
     assert parsed.content_name == "content-1"
+    assert parsed.content_type == "TEXT"
+    assert parsed.generation_stage == "FINAL"
 
 
 def test_parse_text_output_event() -> None:
     parsed = parse_nova_event_bytes(
-        b'{"event":{"textOutput":{"contentName":"content-1","content":"hello"}}}'
+        b'{"event":{"textOutput":{"contentId":"content-1","content":"hello","confidence":0.91}}}'
     )
 
     assert parsed.event_type == "text_output"
     assert parsed.content == "hello"
+    assert parsed.confidence == 0.91
     assert parsed.content_name == "content-1"
 
 
 def test_parse_audio_output_event() -> None:
     content = base64.b64encode(b"\x00\x01").decode("ascii")
     parsed = parse_nova_event_bytes(
-        f'{{"event":{{"audioOutput":{{"contentName":"audio-1","content":"{content}"}}}}}}'.encode("utf-8")
+        f'{{"event":{{"audioOutput":{{"contentId":"audio-1","content":"{content}"}}}}}}'.encode("utf-8")
     )
 
     assert parsed.event_type == "audio_output"
     assert parsed.audio_bytes == b"\x00\x01"
     assert parsed.content_name == "audio-1"
+
+
+def test_parse_events_accept_legacy_content_name_identifier() -> None:
+    parsed = parse_nova_event_bytes(
+        b'{"event":{"textOutput":{"contentName":"legacy-content","content":"hello"}}}'
+    )
+
+    assert parsed.content_name == "legacy-content"
+
+
+def test_parse_content_end_event_reads_stop_reason() -> None:
+    parsed = parse_nova_event_bytes(
+        b'{"event":{"contentEnd":{"contentId":"content-1","type":"TEXT","stopReason":"END_TURN"}}}'
+    )
+
+    assert parsed.event_type == "content_end"
+    assert parsed.content_name == "content-1"
+    assert parsed.content_type == "TEXT"
+    assert parsed.stop_reason == "END_TURN"
 
 
 def test_parse_usage_event() -> None:

@@ -21,6 +21,7 @@ from app.sessions import (
     get_session_repository,
     update_session_with_retry,
 )
+from app.transcripts import TranscriptRepository, get_transcript_repository
 from app.twilio.bridge import NovaClientFactory, TwilioNovaBridge
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,7 @@ async def media_websocket(
     nova_client_factory: NovaClientFactory = Depends(get_nova_client_factory),
     persona_repository: PersonaRepository = Depends(get_persona_repository),
     session_repository: SessionRepository = Depends(get_session_repository),
+    transcript_repository: TranscriptRepository = Depends(get_transcript_repository),
 ) -> None:
     await websocket.accept()
 
@@ -180,6 +182,7 @@ async def media_websocket(
                     stream_sid=metadata.stream_sid,
                     settings=settings,
                     nova_client=nova_client_factory(),
+                    transcript_repository=transcript_repository,
                     system_prompt=persona.system_prompt,
                 )
                 await bridge.start()
