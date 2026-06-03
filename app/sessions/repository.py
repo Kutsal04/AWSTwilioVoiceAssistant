@@ -57,6 +57,9 @@ class SessionRepository(Protocol):
     def get_session(self, session_id: str) -> SessionRecord | None:
         ...
 
+    def list_sessions(self) -> list[SessionRecord]:
+        ...
+
 
 class DynamoSessionRepository:
     def __init__(self, *, table_name: str, dynamodb_resource: Any | None = None) -> None:
@@ -133,6 +136,22 @@ class DynamoSessionRepository:
         if item is None:
             return None
         return session_from_item(item)
+
+    def list_sessions(self) -> list[SessionRecord]:
+        items: list[dict[str, Any]] = []
+        scan_kwargs: dict[str, Any] = {}
+        try:
+            while True:
+                response = self.table.scan(**scan_kwargs)
+                items.extend(response.get("Items", []))
+                last_evaluated_key = response.get("LastEvaluatedKey")
+                if not last_evaluated_key:
+                    break
+                scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
+        except Exception as exc:
+            raise SessionRepositoryError("failed to list sessions") from exc
+
+        return [session_from_item(item) for item in items]
 
 
 def utc_now_iso() -> str:

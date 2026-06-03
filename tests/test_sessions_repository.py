@@ -20,6 +20,8 @@ from app.sessions import (
 class FakeTable:
     def __init__(self) -> None:
         self.items: dict[str, dict] = {}
+        self.scan_pages: list[dict] | None = None
+        self.scan_calls = 0
 
     def put_item(self, *, Item: dict, ConditionExpression: str | None = None) -> None:
         if ConditionExpression == "attribute_not_exists(session_id)" and Item["session_id"] in self.items:
@@ -47,6 +49,12 @@ class FakeTable:
         for assignment in UpdateExpression.removeprefix("SET ").split(", "):
             name_token, value_token = assignment.split(" = ")
             item[ExpressionAttributeNames[name_token]] = ExpressionAttributeValues[value_token]
+
+    def scan(self, **scan_kwargs: object) -> dict:
+        self.scan_calls += 1
+        if self.scan_pages is not None:
+            return self.scan_pages.pop(0)
+        return {"Items": list(self.items.values())}
 
 
 class FakeDynamoResource:
@@ -79,6 +87,9 @@ class FlakySessionRepository:
     def get_session(self, session_id: str) -> None:
         return None
 
+    def list_sessions(self) -> list:
+        return []
+
 
 class ClientErrorSessionRepository:
     def create_session(self, record: object) -> None:
@@ -98,6 +109,9 @@ class ClientErrorSessionRepository:
 
     def get_session(self, session_id: str) -> None:
         return None
+
+    def list_sessions(self) -> list:
+        return []
 
 
 def test_session_item_round_trip() -> None:
@@ -140,6 +154,22 @@ def test_dynamo_session_repository_creates_updates_and_gets_items() -> None:
     assert stored.status == SessionState.COMPLETED
     assert stored.ended_at == "2026-06-01T00:00:01+00:00"
     assert stored.outcome_description == "twilio_stop"
+
+
+def test_dynamo_session_repository_scans_all_pages() -> None:
+    table = FakeTable()
+    first = session_to_item(new_session_record(session_id="session-1", call_sid="CA1", persona_id="warm"))
+    second = session_to_item(new_session_record(session_id="session-2", call_sid="CA2", persona_id="reminder"))
+    table.scan_pages = [
+        {"Items": [first], "LastEvaluatedKey": {"session_id": "session-1"}},
+        {"Items": [second]},
+    ]
+    repository = DynamoSessionRepository(table_name="sessions", dynamodb_resource=FakeDynamoResource(table))
+
+    sessions = repository.list_sessions()
+
+    assert [session.session_id for session in sessions] == ["session-1", "session-2"]
+    assert table.scan_calls == 2
 
 
 def test_create_session_retry_policy_retries_then_succeeds() -> None:

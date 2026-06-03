@@ -216,6 +216,16 @@ Retrieve an ordered transcript with:
 python scripts/get_transcript.py --session-id <session-id>
 ```
 
+## Reporting
+
+Phase 11 adds a CLI-only report over the `sessions` table:
+
+```bash
+python scripts/report.py
+```
+
+The report includes sessions per persona, average call length, error count, and error rate. It uses a simple DynamoDB table scan, which is appropriate for assignment/dev data volume. A larger production analytics path would export or stream records into a dedicated analytical store rather than scanning the operational table.
+
 ## Current Status
 
-Phase 10 adds DynamoDB-backed transcript persistence and CLI retrieval. Reporting, CDK, and production observability integrations are added in later phases.
+Phase 11 adds CLI session reporting. CDK and production observability integrations are added in later phases.
