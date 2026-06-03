@@ -17,6 +17,8 @@ def test_settings_defaults_without_env_file() -> None:
     assert settings.media_idle_timeout_seconds == 30.0
     assert settings.audio_queue_maxsize == 50
     assert settings.nova_stream_open_timeout_seconds == 20.0
+    assert settings.nova_response_timeout_seconds == 30.0
+    assert settings.graceful_shutdown_drain_seconds == 5.0
     assert settings.sessions_table_name == "sessions"
     assert settings.personas_table_name == "personas"
     assert settings.transcript_turns_table_name == "transcript_turns"

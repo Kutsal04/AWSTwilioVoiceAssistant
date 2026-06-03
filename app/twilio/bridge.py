@@ -157,7 +157,38 @@ class TwilioNovaBridge:
 
     async def _send_nova_audio_to_twilio(self) -> None:
         while not self._stopping.is_set():
-            event = await self.nova_client.receive_event()
+            try:
+                event = await asyncio.wait_for(
+                    self.nova_client.receive_event(),
+                    timeout=self.settings.nova_response_timeout_seconds,
+                )
+            except TimeoutError:
+                emit_error_count("nova_response_timeout")
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "nova_response_timeout",
+                    session_id=self.actor.session_id,
+                    call_sid=self.actor.call_sid,
+                    persona_id=self.actor.persona_id,
+                    stream_sid=self.stream_sid,
+                    error_kind="nova_response_timeout",
+                )
+                continue
+            except Exception as exc:
+                error_kind = type(exc).__name__
+                emit_error_count(error_kind)
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "nova_receive_error",
+                    session_id=self.actor.session_id,
+                    call_sid=self.actor.call_sid,
+                    persona_id=self.actor.persona_id,
+                    stream_sid=self.stream_sid,
+                    error_kind=error_kind,
+                )
+                return
 
             self._nova_events += 1
             await self._handle_transcript_event(event)

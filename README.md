@@ -41,6 +41,8 @@ The current local settings are:
 - `MEDIA_IDLE_TIMEOUT_SECONDS`
 - `AUDIO_QUEUE_MAXSIZE`
 - `NOVA_STREAM_OPEN_TIMEOUT_SECONDS`
+- `NOVA_RESPONSE_TIMEOUT_SECONDS`
+- `GRACEFUL_SHUTDOWN_DRAIN_SECONDS`
 - `SESSION_WRITE_TIMEOUT_SECONDS`
 - `SESSION_WRITE_RETRY_DELAY_SECONDS`
 - `SESSION_CREATE_MAX_ATTEMPTS`
@@ -239,6 +241,12 @@ Current EMF metrics:
 
 For local validation, make a Twilio/ngrok call and confirm the logs include lifecycle events such as `twilio_media_started`, `nova_stream_started`, and `twilio_media_stopped`, plus top-level EMF JSON records containing `_aws`.
 
+## Reliability
+
+Phase 13 makes failure paths explicit and bounded. Persona lookup, session writes, transcript writes, Nova stream open, Nova response waits, Twilio media idle, and service shutdown drain all have configured timeouts. DynamoDB session and transcript writes retry briefly according to their write criticality.
+
+If Nova response events stall, the bridge logs `nova_response_timeout` and keeps the call process alive. If Nova receive fails, the bridge logs `nova_receive_error` and avoids crashing the process. Twilio disconnects remove active actors from the process-local registry, and service shutdown uses FastAPI lifespan cleanup to abandon/finalize any active sessions as `abandoned` with `service_shutdown` where practical.
+
 ## Current Status
 
-Phase 12 adds structured runtime logs and EMF metrics. CDK infrastructure and production alarms are added in later phases.
+Phase 13 adds bounded reliability handling for known runtime failure paths. Containerization, CDK infrastructure, and production alarms are added in later phases.

@@ -27,6 +27,10 @@ class SessionRegistry:
         async with self._lock:
             return len(self._sessions)
 
+    async def list(self) -> list[SessionActor]:
+        async with self._lock:
+            return list(self._sessions.values())
+
     async def clear(self) -> None:
         async with self._lock:
             self._sessions.clear()

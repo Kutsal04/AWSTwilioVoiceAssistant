@@ -137,6 +137,7 @@ def test_session_registry_create_get_remove_cleanup() -> None:
 
         assert await registry.get("session-registry") is actor
         assert await registry.count() == 1
+        assert await registry.list() == [actor]
         assert await registry.remove("session-registry") is actor
         assert await registry.get("session-registry") is None
         assert await registry.count() == 0
