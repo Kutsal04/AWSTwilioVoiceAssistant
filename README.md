@@ -226,6 +226,19 @@ python scripts/report.py
 
 The report includes sessions per persona, average call length, error count, and error rate. It uses a simple DynamoDB table scan, which is appropriate for assignment/dev data volume. A larger production analytics path would export or stream records into a dedicated analytical store rather than scanning the operational table.
 
+## Observability
+
+Phase 12 emits structured JSON logs and CloudWatch Embedded Metric Format metrics from the runtime path. Call-related logs include `session_id`, `call_sid`, and `persona_id` once Twilio sends the media `start` event. Logs intentionally exclude raw transcript text, caller utterances, phone numbers, and media payloads.
+
+Current EMF metrics:
+
+- `CallCount`, dimensioned by `persona_id`.
+- `TurnResponseLatencyMs`, dimensioned by `persona_id`.
+- `ErrorCount`, dimensioned by `error_kind`.
+- `AudioFrameDropped`, dimensioned by `direction` and `persona_id`.
+
+For local validation, make a Twilio/ngrok call and confirm the logs include lifecycle events such as `twilio_media_started`, `nova_stream_started`, and `twilio_media_stopped`, plus top-level EMF JSON records containing `_aws`.
+
 ## Current Status
 
-Phase 11 adds CLI session reporting. CDK and production observability integrations are added in later phases.
+Phase 12 adds structured runtime logs and EMF metrics. CDK infrastructure and production alarms are added in later phases.

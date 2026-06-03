@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from app.logging import log_event
-from app.metrics import metric_payload
+from app.metrics import emit_audio_frame_dropped, metric_payload
 from app.sessions.lifecycle import SessionState, TERMINAL_STATES, validate_transition
 
 logger = logging.getLogger(__name__)
@@ -125,6 +125,7 @@ class SessionActor:
                 dropped_frames,
                 {"direction": direction, "persona_id": self.persona_id},
             )
+            emit_audio_frame_dropped(direction, self.persona_id, dropped_frames)
             log_event(
                 logger,
                 logging.WARNING,

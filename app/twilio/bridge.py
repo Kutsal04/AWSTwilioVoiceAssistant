@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Callable
+from time import monotonic
 from typing import Protocol
 from uuid import uuid4
 
@@ -9,6 +10,7 @@ from fastapi import WebSocket
 from app.audio import nova_pcm16_to_twilio_payload
 from app.config import Settings
 from app.logging import log_event
+from app.metrics import emit_error_count, emit_turn_response_latency
 from app.nova import (
     NovaParsedEvent,
     audio_content_start_event,
@@ -81,6 +83,7 @@ class TwilioNovaBridge:
         self._input_task: asyncio.Task | None = None
         self._output_task: asyncio.Task | None = None
         self._nova_events = 0
+        self._latest_caller_turn_at: float | None = None
 
     async def start(self) -> None:
         await asyncio.wait_for(self.nova_client.open(), timeout=self.settings.nova_stream_open_timeout_seconds)
@@ -182,6 +185,7 @@ class TwilioNovaBridge:
                 "transcript_item_id": turn.transcript_item_id,
             }
         )
+        self._record_turn_latency(turn.speaker)
         try:
             await put_transcript_turn_with_retry(
                 repository=self.transcript_repository,
@@ -189,6 +193,7 @@ class TwilioNovaBridge:
                 settings=self.settings,
             )
         except TranscriptPersistenceError as exc:
+            emit_error_count(exc.error_kind)
             log_event(
                 logger,
                 logging.WARNING,
@@ -199,6 +204,27 @@ class TwilioNovaBridge:
                 turn_index=turn.turn_index,
                 error_kind=exc.error_kind,
             )
+
+    def _record_turn_latency(self, speaker: str) -> None:
+        now = monotonic()
+        if speaker == "caller":
+            self._latest_caller_turn_at = now
+            return
+        if speaker != "assistant" or self._latest_caller_turn_at is None:
+            return
+
+        latency_ms = (now - self._latest_caller_turn_at) * 1000
+        emit_turn_response_latency(self.actor.persona_id, latency_ms)
+        log_event(
+            logger,
+            logging.INFO,
+            "turn_response_latency_recorded",
+            session_id=self.actor.session_id,
+            call_sid=self.actor.call_sid,
+            persona_id=self.actor.persona_id,
+            latency_ms=round(latency_ms, 2),
+        )
+        self._latest_caller_turn_at = None
 
     async def _wait_or_cancel(self, task: asyncio.Task | None, *, timeout: float, task_name: str) -> None:
         if task is None or task.done():
@@ -219,6 +245,7 @@ class TwilioNovaBridge:
         except asyncio.CancelledError:
             return
         except Exception as exc:
+            emit_error_count(type(exc).__name__)
             log_event(
                 logger,
                 logging.WARNING,

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 from app.audio import AudioConversionError, twilio_payload_to_nova_pcm16
 from app.config import Settings, get_settings
 from app.logging import log_event
+from app.metrics import emit_call_count, emit_error_count
 from app.nova import NovaClient
 from app.personas import PersonaRepository, PersonaSelectionError, get_persona_repository, resolve_persona
 from app.sessions import (
@@ -142,6 +143,7 @@ async def media_websocket(
                     timeout=settings.media_idle_timeout_seconds,
                 )
             except TimeoutError:
+                emit_error_count("media_idle_timeout")
                 log_event(logger, logging.WARNING, "twilio_media_idle_timeout", **_metadata_fields(metadata))
                 await _abandon_and_cleanup(actor, bridge, session_repository, settings, metadata)
                 await websocket.close(code=status.WS_1001_GOING_AWAY)
@@ -187,11 +189,13 @@ async def media_websocket(
                 )
                 await bridge.start()
                 started = True
+                emit_call_count(persona.persona_id)
                 log_event(logger, logging.INFO, "twilio_media_started", **_metadata_fields(metadata))
                 continue
 
             if event_name == "media":
                 if not started or actor is None:
+                    emit_error_count("media_before_start")
                     log_event(logger, logging.WARNING, "twilio_media_before_start", error_kind="media_before_start")
                     await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
                     return
@@ -225,10 +229,13 @@ async def media_websocket(
                 return
 
     except (TwilioMediaProtocolError, AudioConversionError) as exc:
-        log_event(logger, logging.WARNING, "twilio_media_protocol_error", error_kind=type(exc).__name__, **_metadata_fields(metadata))
-        await _fail_and_cleanup(actor, bridge, session_repository, settings, metadata, type(exc).__name__)
+        error_kind = type(exc).__name__
+        emit_error_count(error_kind)
+        log_event(logger, logging.WARNING, "twilio_media_protocol_error", error_kind=error_kind, **_metadata_fields(metadata))
+        await _fail_and_cleanup(actor, bridge, session_repository, settings, metadata, error_kind)
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
     except PersonaSelectionError as exc:
+        emit_error_count(exc.error_kind)
         log_event(
             logger,
             logging.WARNING,
@@ -252,8 +259,10 @@ async def media_websocket(
         elif connected_seen:
             log_event(logger, logging.INFO, "twilio_media_disconnected", status="abandoned")
     except Exception as exc:
-        log_event(logger, logging.ERROR, "twilio_media_bridge_error", error_kind=type(exc).__name__, **_metadata_fields(metadata))
-        await _fail_and_cleanup(actor, bridge, session_repository, settings, metadata, type(exc).__name__)
+        error_kind = type(exc).__name__
+        emit_error_count(error_kind)
+        log_event(logger, logging.ERROR, "twilio_media_bridge_error", error_kind=error_kind, **_metadata_fields(metadata))
+        await _fail_and_cleanup(actor, bridge, session_repository, settings, metadata, error_kind)
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
 
 
@@ -288,6 +297,7 @@ async def _update_session(
             error_kind=error_kind,
         )
     except SessionPersistenceError as exc:
+        emit_error_count(exc.error_kind)
         log_event(
             logger,
             logging.ERROR,
@@ -319,6 +329,7 @@ async def _finalize_session(
             error_kind=error_kind,
         )
     except SessionPersistenceError as exc:
+        emit_error_count(exc.error_kind)
         log_event(
             logger,
             logging.ERROR,

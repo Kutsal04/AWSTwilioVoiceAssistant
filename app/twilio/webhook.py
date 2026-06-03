@@ -9,6 +9,7 @@ from twilio.twiml.voice_response import Connect, Stream, VoiceResponse
 
 from app.config import Settings, get_settings
 from app.logging import log_event
+from app.metrics import emit_error_count
 from app.personas import PersonaRepository, PersonaSelectionError, get_persona_repository, resolve_persona
 from app.sessions import (
     SessionPersistenceError,
@@ -62,6 +63,7 @@ async def verify_twilio_signature(request: Request, settings: Settings) -> None:
         return
 
     if not settings.twilio_auth_token:
+        emit_error_count("missing_twilio_auth_token")
         log_event(logger, logging.ERROR, "twilio_signature_config_missing", error_kind="missing_twilio_auth_token")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -73,6 +75,7 @@ async def verify_twilio_signature(request: Request, settings: Settings) -> None:
     if validator.validate(public_request_url(request, settings), await form_params(request), signature):
         return
 
+    emit_error_count("invalid_twilio_signature")
     log_event(logger, logging.WARNING, "twilio_signature_invalid", error_kind="invalid_twilio_signature")
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Twilio signature")
 
@@ -98,6 +101,7 @@ async def voice_webhook(
             repository=persona_repository,
         )
     except PersonaSelectionError as exc:
+        emit_error_count(exc.error_kind)
         log_event(
             logger,
             logging.WARNING,
@@ -119,6 +123,7 @@ async def voice_webhook(
             settings=settings,
         )
     except SessionPersistenceError as exc:
+        emit_error_count(exc.error_kind)
         log_event(
             logger,
             logging.ERROR,

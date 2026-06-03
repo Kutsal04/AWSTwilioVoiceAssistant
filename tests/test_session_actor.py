@@ -83,6 +83,7 @@ def test_inbound_queue_overflow_drops_oldest_frame_and_logs_metric(caplog: pytes
             "metric_name": "AudioFrameDropped",
             "value": 1,
             "dimensions": {"direction": "inbound", "persona_id": "appointment_reminder"},
+            "unit": "Count",
         }
         assert actor.dropped_inbound_frames == 1
         assert drain_queue(actor.inbound_audio_queue) == [b"middle", b"newest"]

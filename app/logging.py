@@ -27,6 +27,10 @@ ALLOWED_LOG_FIELD_NAMES = {
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
+        emf_payload = getattr(record, "emf_payload", None)
+        if isinstance(emf_payload, dict):
+            return json.dumps(emf_payload, separators=(",", ":"))
+
         payload: dict[str, Any] = {
             "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
