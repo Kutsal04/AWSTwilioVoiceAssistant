@@ -237,14 +237,11 @@ class VoiceAgentStack(Stack):
         if certificate_arn:
             certificate = acm.Certificate.from_certificate_arn(self, "AlbCertificate", str(certificate_arn))
             http_listener = load_balancer.add_listener(
-                "HttpRedirectListener",
+                "HttpListener",
                 port=80,
                 protocol=elbv2.ApplicationProtocol.HTTP,
                 open=True,
-            )
-            http_listener.add_action(
-                "RedirectToHttps",
-                action=elbv2.ListenerAction.redirect(protocol="HTTPS", port="443", permanent=True),
+                default_action=elbv2.ListenerAction.redirect(protocol="HTTPS", port="443", permanent=True),
             )
             return load_balancer.add_listener(
                 "HttpsListener",
