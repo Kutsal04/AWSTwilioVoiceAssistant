@@ -53,7 +53,7 @@ The data model will use three DynamoDB tables:
 - `personas`
 - `transcript_turns`
 
-The core conversation flow will implement clean turn-taking first. Barge-in will be treated as a later optional enhancement, not a dependency for Phase 1 success.
+The core conversation flow implemented clean turn-taking first. Barge-in was added later as optional bonus behavior, with configuration to disable or tune it independently of the required call path.
 
 ## Alternatives Considered
 
@@ -119,7 +119,7 @@ They were rejected in favor of CLI scripts because transcript/report access is n
 
 Barge-in would improve conversational naturalness and is a strong signal if implemented correctly.
 
-It was rejected as a core dependency because it adds significant complexity around caller speech detection, response cancellation, Twilio `clear`, outbound audio flushing, and Nova stream state. The system will be designed with hooks for future barge-in but will first prioritize reliable turn-taking.
+It was rejected as a core dependency because it adds significant complexity around caller speech detection, response cancellation, Twilio `clear`, outbound audio flushing, and Nova stream state. The system first prioritized reliable turn-taking, then added barge-in as a configurable bonus feature once the required path was stable.
 
 ## Tradeoffs
 
@@ -139,7 +139,7 @@ DynamoDB is excellent for the required session and transcript access patterns. I
 
 ### Turn-Taking vs Barge-In
 
-Clean turn-taking is less natural than true interruption support, but it is much less risky. The architecture keeps barge-in optional so Phase 1 success does not depend on the most complex interaction behavior.
+Clean turn-taking is less natural than interruption support, but it is much less risky. The architecture keeps barge-in optional and configurable so Phase 1 success does not depend on the most complex interaction behavior. The implemented bonus path uses lightweight RMS voice activity detection plus Twilio `clear`; the threshold is tunable locally and through CDK context for deployed ECS tasks.
 
 ### Runtime Query Parameter Persona Selection
 
@@ -168,7 +168,7 @@ Persona records live in the `personas` table and include the system prompt, disp
 - If a task dies during a call, the original WebSocket, Nova stream, in-memory queues, and partial turn buffers are lost. DynamoDB preserves durable session/transcript context, and a later media stream carrying the same `session_id` can re-attach to the existing session and start a fresh Nova stream.
 - CLI-only transcript/report access is less convenient than HTTP endpoints.
 - DynamoDB scans for reporting are acceptable only because assignment data volume is small.
-- Barge-in is not included in the required path and may not be delivered if time runs short.
+- Barge-in is available as a bonus feature, but it remains threshold-based and may need tuning per phone/audio environment.
 - ALB + ACM requires domain/certificate setup for the final clean deployed WSS endpoint.
 
 ## Rejected Approaches
@@ -310,7 +310,7 @@ If scaling beyond the assignment:
 ### Known Limitations
 
 - No exact same-stream continuation after Fargate task death; recovery is durable session re-attachment with a fresh Nova stream.
-- No full barge-in in the required path.
+- Barge-in is implemented as a tunable bonus feature, not as a hard dependency for the required call path.
 - Reporting uses simple DynamoDB reads/scans suitable for small assignment data.
 - No HIPAA-grade compliance, audit logging, or regulated data handling.
 - No real EMR, scheduling system, or external business-system integration.
