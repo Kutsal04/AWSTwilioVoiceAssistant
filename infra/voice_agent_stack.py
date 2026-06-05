@@ -28,6 +28,9 @@ class VoiceAgentStack(Stack):
         default_persona_id = self._context("defaultPersonaId", "warm_clinical_followup")
         bedrock_region = self._context("bedrockRegion", self.region)
         nova_model_id = self._context("novaModelId", "amazon.nova-2-sonic-v1:0")
+        barge_in_enabled = self._context("bargeInEnabled", "true")
+        barge_in_rms_threshold = self._context("bargeInRmsThreshold", "900")
+        barge_in_playback_grace_seconds = self._context("bargeInPlaybackGraceSeconds", "0.75")
         domain_name = self.node.try_get_context("domainName")
         certificate_arn = self.node.try_get_context("certificateArn")
         twilio_auth_token_secret_arn = self.node.try_get_context("twilioAuthTokenSecretArn")
@@ -90,6 +93,9 @@ class VoiceAgentStack(Stack):
                 "TRANSCRIPT_TURNS_TABLE_NAME": transcript_turns_table.table_name,
                 "BEDROCK_REGION": bedrock_region,
                 "NOVA_MODEL_ID": nova_model_id,
+                "BARGE_IN_ENABLED": barge_in_enabled,
+                "BARGE_IN_RMS_THRESHOLD": barge_in_rms_threshold,
+                "BARGE_IN_PLAYBACK_GRACE_SECONDS": barge_in_playback_grace_seconds,
             },
         )
         container.add_port_mappings(ecs.PortMapping(container_port=8080, protocol=ecs.Protocol.TCP))

@@ -324,12 +324,17 @@ npx cdk deploy \
   -c env=dev \
   -c defaultPersonaId=warm_clinical_followup \
   -c bedrockRegion=us-east-1 \
+  -c bargeInEnabled=true \
+  -c bargeInRmsThreshold=900 \
+  -c bargeInPlaybackGraceSeconds=0.75 \
   -c twilioAuthTokenSecretArn=arn:aws:secretsmanager:us-east-1:123456789012:secret:twilio-auth-token-AbCdEf \
   -c domainName=voice.example.com \
   -c certificateArn=arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000
 ```
 
 `ENV_NAME` is non-local in ECS, so Twilio signature verification is enabled. Provide `twilioAuthTokenSecretArn` before using the deployed Twilio webhook. Without a custom domain/certificate, the stack exposes HTTP through the ALB for health checks; production Twilio media should use an HTTPS/WSS domain backed by ACM.
+
+For deployed barge-in tuning, increase `bargeInRmsThreshold` to make interruptions less sensitive, or lower it to make interruptions easier. A value around `900` is a moderate starting point; `1200` is more conservative.
 
 ## Current Status
 
