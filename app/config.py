@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     audio_queue_maxsize: int = Field(default=50, gt=0)
     nova_stream_open_timeout_seconds: float = Field(default=20.0, gt=0)
     nova_response_timeout_seconds: float = Field(default=30.0, gt=0)
+    barge_in_enabled: bool = True
+    barge_in_rms_threshold: float = Field(default=500.0, ge=0)
+    barge_in_playback_grace_seconds: float = Field(default=0.75, gt=0)
     graceful_shutdown_drain_seconds: float = Field(default=5.0, gt=0)
     session_write_timeout_seconds: float = Field(default=2.0, gt=0)
     session_write_retry_delay_seconds: float = Field(default=0.1, ge=0)

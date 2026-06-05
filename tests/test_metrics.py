@@ -5,6 +5,7 @@ import logging
 from app.logging import JsonFormatter
 from app.metrics import (
     METRIC_NAMESPACE,
+    emit_barge_in_count,
     emit_call_count,
     emit_error_count,
     emit_metric,
@@ -46,6 +47,7 @@ def test_named_metric_helpers_emit_expected_dimensions() -> None:
     call_count = emit_call_count("appointment_reminder")
     latency = emit_turn_response_latency("appointment_reminder", 123.4)
     error = emit_error_count("TwilioMediaProtocolError")
+    barge_in = emit_barge_in_count("appointment_reminder")
 
     assert call_count["persona_id"] == "appointment_reminder"
     assert call_count["CallCount"] == 1
@@ -53,3 +55,5 @@ def test_named_metric_helpers_emit_expected_dimensions() -> None:
     assert latency["_aws"]["CloudWatchMetrics"][0]["Metrics"][0]["Unit"] == "Milliseconds"
     assert error["error_kind"] == "TwilioMediaProtocolError"
     assert error["ErrorCount"] == 1
+    assert barge_in["persona_id"] == "appointment_reminder"
+    assert barge_in["BargeInCount"] == 1

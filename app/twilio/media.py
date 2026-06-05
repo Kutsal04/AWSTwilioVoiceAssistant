@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["media"])
 
-TwilioEventName = Literal["connected", "start", "media", "stop"]
+TwilioEventName = Literal["connected", "start", "media", "mark", "stop"]
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,7 @@ def parse_twilio_event(raw_message: str) -> dict[str, Any]:
         raise TwilioMediaProtocolError("message must be a JSON object")
 
     event_name = event.get("event")
-    if event_name not in {"connected", "start", "media", "stop"}:
+    if event_name not in {"connected", "start", "media", "mark", "stop"}:
         raise TwilioMediaProtocolError("unsupported Twilio media event")
 
     return event
@@ -101,6 +101,15 @@ def extract_media_payload(event: dict[str, Any]) -> str:
     if not isinstance(payload, str):
         raise TwilioMediaProtocolError("media event is missing payload")
     return payload
+
+
+def extract_mark_name(event: dict[str, Any]) -> str:
+    if event.get("event") != "mark":
+        raise TwilioMediaProtocolError("expected mark event")
+    mark = event.get("mark")
+    if not isinstance(mark, dict):
+        raise TwilioMediaProtocolError("mark event is missing mark payload")
+    return _required_string(mark, "name")
 
 
 def _required_string(payload: dict[str, Any], key: str) -> str:
@@ -201,8 +210,15 @@ async def media_websocket(
                     return
                 payload = extract_media_payload(event)
                 pcm16_audio = twilio_payload_to_nova_pcm16(payload)
+                if bridge is not None:
+                    await bridge.observe_inbound_audio(pcm16_audio)
                 await actor.enqueue_inbound_audio(pcm16_audio)
                 media_frames += 1
+                continue
+
+            if event_name == "mark":
+                if bridge is not None:
+                    await bridge.handle_twilio_mark(extract_mark_name(event))
                 continue
 
             if event_name == "stop":

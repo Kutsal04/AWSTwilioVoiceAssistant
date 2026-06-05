@@ -42,6 +42,9 @@ The current local settings are:
 - `AUDIO_QUEUE_MAXSIZE`
 - `NOVA_STREAM_OPEN_TIMEOUT_SECONDS`
 - `NOVA_RESPONSE_TIMEOUT_SECONDS`
+- `BARGE_IN_ENABLED`
+- `BARGE_IN_RMS_THRESHOLD`
+- `BARGE_IN_PLAYBACK_GRACE_SECONDS`
 - `GRACEFUL_SHUTDOWN_DRAIN_SECONDS`
 - `SESSION_WRITE_TIMEOUT_SECONDS`
 - `SESSION_WRITE_RETRY_DELAY_SECONDS`
@@ -238,8 +241,15 @@ Current EMF metrics:
 - `TurnResponseLatencyMs`, dimensioned by `persona_id`.
 - `ErrorCount`, dimensioned by `error_kind`.
 - `AudioFrameDropped`, dimensioned by `direction` and `persona_id`.
+- `BargeInCount`, dimensioned by `persona_id`.
 
 For local validation, make a Twilio/ngrok call and confirm the logs include lifecycle events such as `twilio_media_started`, `nova_stream_started`, and `twilio_media_stopped`, plus top-level EMF JSON records containing `_aws`.
+
+## Bonus Barge-In
+
+Phase 18 adds configurable barge-in support. Assistant audio is still sent smoothly, while Twilio `mark` messages are used for lightweight playback/backlog tracking. When caller speech is detected while assistant audio is still active, the bridge sends Twilio a `clear` event, suppresses additional audio from the interrupted assistant response, and forwards the caller audio to Nova as the new turn.
+
+The implementation uses a lightweight PCM16 RMS threshold instead of logging or inspecting transcript text. Tune `BARGE_IN_RMS_THRESHOLD` if deployed calls interrupt too aggressively or miss obvious caller interruptions. Set `BARGE_IN_ENABLED=false` to disable the bonus path without removing the code.
 
 ## Reliability
 

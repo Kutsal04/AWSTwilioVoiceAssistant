@@ -15,6 +15,7 @@ from app.audio.codec import (
     twilio_payload_to_nova_pcm16,
     validate_pcm16,
 )
+from app.audio.voice_activity import has_voice_activity, pcm16_rms_amplitude
 
 __all__ = [
     "NOVA_SAMPLE_RATE_HZ",
@@ -30,4 +31,6 @@ __all__ = [
     "resample_pcm16_mono",
     "twilio_payload_to_nova_pcm16",
     "validate_pcm16",
+    "has_voice_activity",
+    "pcm16_rms_amplitude",
 ]

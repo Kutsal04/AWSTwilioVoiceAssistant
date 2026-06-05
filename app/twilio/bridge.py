@@ -1,16 +1,17 @@
 import asyncio
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from time import monotonic
 from typing import Protocol
 from uuid import uuid4
 
 from fastapi import WebSocket
 
-from app.audio import nova_pcm16_to_twilio_payload
+from app.audio import has_voice_activity, nova_pcm16_to_twilio_payload
 from app.config import Settings
 from app.logging import log_event
-from app.metrics import emit_error_count, emit_turn_response_latency
+from app.metrics import emit_audio_frame_dropped, emit_barge_in_count, emit_error_count, emit_turn_response_latency
 from app.nova import (
     NovaParsedEvent,
     audio_content_start_event,
@@ -54,6 +55,12 @@ class NovaStreamClient(Protocol):
 NovaClientFactory = Callable[[], NovaStreamClient]
 
 
+@dataclass(frozen=True)
+class OutboundAudioFrame:
+    payload: str
+    content_name: str | None
+
+
 class TwilioNovaBridge:
     def __init__(
         self,
@@ -82,8 +89,19 @@ class TwilioNovaBridge:
         self._stopped = False
         self._input_task: asyncio.Task | None = None
         self._output_task: asyncio.Task | None = None
+        self._twilio_sender_task: asyncio.Task | None = None
+        self._outbound_audio_queue: asyncio.Queue[OutboundAudioFrame] = asyncio.Queue(
+            maxsize=settings.audio_queue_maxsize
+        )
         self._nova_events = 0
         self._latest_caller_turn_at: float | None = None
+        self._twilio_send_lock = asyncio.Lock()
+        self._pending_marks: dict[str, str | None] = {}
+        self._mark_sequence = 0
+        self._assistant_audio_active_until: float | None = None
+        self._active_assistant_audio_content_name: str | None = None
+        self._interrupted_audio_content_names: set[str] = set()
+        self._barge_in_count = 0
 
     async def start(self) -> None:
         await asyncio.wait_for(self.nova_client.open(), timeout=self.settings.nova_stream_open_timeout_seconds)
@@ -102,6 +120,10 @@ class TwilioNovaBridge:
             self._send_nova_audio_to_twilio(),
             name=f"{self.actor.session_id}-nova-output",
         )
+        self._twilio_sender_task = self.actor.create_task(
+            self._send_outbound_audio_to_twilio(),
+            name=f"{self.actor.session_id}-twilio-output",
+        )
         log_event(
             logger,
             logging.INFO,
@@ -111,6 +133,40 @@ class TwilioNovaBridge:
             persona_id=self.actor.persona_id,
             stream_sid=self.stream_sid,
         )
+
+    async def observe_inbound_audio(self, pcm16_audio: bytes) -> None:
+        if not self.settings.barge_in_enabled or not self._assistant_audio_is_active():
+            return
+        if not has_voice_activity(pcm16_audio, rms_threshold=self.settings.barge_in_rms_threshold):
+            return
+
+        content_name = self._active_assistant_audio_content_name
+        if content_name is not None:
+            self._interrupted_audio_content_names.add(content_name)
+        self._assistant_audio_active_until = None
+        self._barge_in_count += 1
+        cleared_local_frames = self._clear_outbound_audio_queue()
+        self._clear_pending_marks()
+
+        await self._send_twilio_clear()
+        emit_barge_in_count(self.actor.persona_id)
+        log_event(
+            logger,
+            logging.INFO,
+            "barge_in_detected",
+            session_id=self.actor.session_id,
+            call_sid=self.actor.call_sid,
+            persona_id=self.actor.persona_id,
+            stream_sid=self.stream_sid,
+            interrupted_content_name=content_name,
+            barge_in_count=self._barge_in_count,
+            cleared_local_frames=cleared_local_frames,
+        )
+
+    async def handle_twilio_mark(self, mark_name: str) -> None:
+        self._pending_marks.pop(mark_name, None)
+        if not self._pending_marks and self._outbound_audio_queue.empty():
+            self._assistant_audio_active_until = None
 
     async def stop(self) -> None:
         if self._stopped:
@@ -132,6 +188,7 @@ class TwilioNovaBridge:
             await self.nova_client.close()
 
         await self._wait_or_cancel(self._output_task, timeout=0.1, task_name="nova_output")
+        await self._wait_or_cancel(self._twilio_sender_task, timeout=0.5, task_name="twilio_output")
         log_event(
             logger,
             logging.INFO,
@@ -194,15 +251,103 @@ class TwilioNovaBridge:
             await self._handle_transcript_event(event)
             if event.event_type != "audio_output" or event.audio_bytes is None:
                 continue
+            if self._is_interrupted_audio_event(event):
+                continue
 
             payload = nova_pcm16_to_twilio_payload(event.audio_bytes)
+            await self._enqueue_outbound_audio(OutboundAudioFrame(
+                payload=payload,
+                content_name=event.content_name,
+            ))
+
+    async def _send_outbound_audio_to_twilio(self) -> None:
+        while not self._stopping.is_set():
+            try:
+                frame = await asyncio.wait_for(self._outbound_audio_queue.get(), timeout=0.1)
+            except TimeoutError:
+                continue
+            if frame.content_name is not None and frame.content_name in self._interrupted_audio_content_names:
+                continue
+            if self._stopping.is_set():
+                return
+            await self._send_twilio_media(frame)
+
+    async def _enqueue_outbound_audio(self, frame: OutboundAudioFrame) -> None:
+        dropped_frames = 0
+        if self._outbound_audio_queue.full():
+            self._outbound_audio_queue.get_nowait()
+            dropped_frames = 1
+            self.actor.dropped_outbound_frames += 1
+        self._outbound_audio_queue.put_nowait(frame)
+        if dropped_frames:
+            emit_audio_frame_dropped("outbound", self.actor.persona_id, dropped_frames)
+            log_event(
+                logger,
+                logging.WARNING,
+                "audio_frame_dropped",
+                session_id=self.actor.session_id,
+                call_sid=self.actor.call_sid,
+                persona_id=self.actor.persona_id,
+                direction="outbound",
+                dropped_frames=dropped_frames,
+                queue_depth=self._outbound_audio_queue.qsize(),
+            )
+
+    def _clear_outbound_audio_queue(self) -> int:
+        cleared_frames = 0
+        while True:
+            try:
+                self._outbound_audio_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return cleared_frames
+            cleared_frames += 1
+
+    def _clear_pending_marks(self) -> None:
+        self._pending_marks.clear()
+
+    def _assistant_audio_is_active(self) -> bool:
+        if self._pending_marks or not self._outbound_audio_queue.empty():
+            return True
+        return self._assistant_audio_active_until is not None and monotonic() <= self._assistant_audio_active_until
+
+    def _is_interrupted_audio_event(self, event: NovaParsedEvent) -> bool:
+        return event.content_name is not None and event.content_name in self._interrupted_audio_content_names
+
+    async def _send_twilio_media(self, frame: OutboundAudioFrame) -> None:
+        mark_name = self._next_mark_name()
+        async with self._twilio_send_lock:
+            if frame.content_name is not None and frame.content_name in self._interrupted_audio_content_names:
+                return
+            self._pending_marks[mark_name] = frame.content_name
             await self.websocket.send_json(
                 {
                     "event": "media",
                     "streamSid": self.stream_sid,
-                    "media": {"payload": payload},
+                    "media": {"payload": frame.payload},
                 }
             )
+            await self.websocket.send_json(
+                {
+                    "event": "mark",
+                    "streamSid": self.stream_sid,
+                    "mark": {"name": mark_name},
+                }
+            )
+            self._active_assistant_audio_content_name = frame.content_name
+            self._assistant_audio_active_until = monotonic() + self.settings.barge_in_playback_grace_seconds
+
+    async def _send_twilio_clear(self) -> None:
+        async with self._twilio_send_lock:
+            await self.websocket.send_json(
+                {
+                    "event": "clear",
+                    "streamSid": self.stream_sid,
+                }
+            )
+
+    def _next_mark_name(self) -> str:
+        self._mark_sequence += 1
+        return f"{self.actor.session_id}:assistant-audio:{self._mark_sequence}"
 
     async def _handle_transcript_event(self, event: NovaParsedEvent) -> None:
         turn = self.transcript_buffer.handle_nova_event(event)

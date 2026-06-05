@@ -14,6 +14,7 @@ from app.sessions import SessionState, active_sessions
 from app.transcripts import TranscriptRepository, TranscriptTurn, get_transcript_repository
 from app.twilio.media import (
     TwilioMediaProtocolError,
+    extract_mark_name,
     extract_media_payload,
     extract_start_metadata,
     get_nova_client_factory,
@@ -126,10 +127,26 @@ def stop_event() -> dict[str, object]:
     return {"event": "stop", "streamSid": "MZ123", "stop": {"accountSid": "AC123", "callSid": "CA123"}}
 
 
+def mark_event(name: str) -> dict[str, object]:
+    return {"event": "mark", "streamSid": "MZ123", "mark": {"name": name}}
+
+
+def receive_outbound_media_and_ack_mark(websocket) -> dict:
+    outbound = websocket.receive_json()
+    mark = websocket.receive_json()
+    assert mark["event"] == "mark"
+    websocket.send_json(mark_event(mark["mark"]["name"]))
+    return outbound
+
+
 def test_parse_twilio_event_accepts_known_events() -> None:
     parsed = parse_twilio_event('{"event":"connected"}')
 
     assert parsed == {"event": "connected"}
+    assert parse_twilio_event('{"event":"mark","mark":{"name":"audio-1"}}') == {
+        "event": "mark",
+        "mark": {"name": "audio-1"},
+    }
 
 
 def test_parse_twilio_event_rejects_malformed_json() -> None:
@@ -139,7 +156,7 @@ def test_parse_twilio_event_rejects_malformed_json() -> None:
 
 def test_parse_twilio_event_rejects_unknown_events() -> None:
     with pytest.raises(TwilioMediaProtocolError):
-        parse_twilio_event('{"event":"mark"}')
+        parse_twilio_event('{"event":"dtmf"}')
 
 
 def test_extract_start_metadata_reads_stream_parameters() -> None:
@@ -153,6 +170,10 @@ def test_extract_start_metadata_reads_stream_parameters() -> None:
 
 def test_extract_media_payload_reads_payload() -> None:
     assert extract_media_payload(media_event()) == "/w=="
+
+
+def test_extract_mark_name_reads_mark_payload() -> None:
+    assert extract_mark_name(mark_event("assistant-audio-1")) == "assistant-audio-1"
 
 
 @pytest.mark.parametrize(
@@ -299,7 +320,7 @@ def test_media_websocket_sends_nova_audio_back_to_twilio() -> None:
         with client.websocket_connect("/media") as websocket:
             websocket.send_json(connected_event())
             websocket.send_json(start_event())
-            outbound = websocket.receive_json()
+            outbound = receive_outbound_media_and_ack_mark(websocket)
             websocket.send_json(stop_event())
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 websocket.receive_text()
@@ -434,7 +455,7 @@ def test_media_websocket_persists_finalized_nova_transcript_turn_without_logging
         with client.websocket_connect("/media") as websocket:
             websocket.send_json(connected_event())
             websocket.send_json(start_event())
-            websocket.receive_json()
+            receive_outbound_media_and_ack_mark(websocket)
             websocket.send_json(stop_event())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
@@ -492,7 +513,7 @@ def test_media_websocket_does_not_persist_speculative_nova_transcript_turn() -> 
         with client.websocket_connect("/media") as websocket:
             websocket.send_json(connected_event())
             websocket.send_json(start_event())
-            websocket.receive_json()
+            receive_outbound_media_and_ack_mark(websocket)
             websocket.send_json(stop_event())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()

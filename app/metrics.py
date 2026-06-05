@@ -69,5 +69,9 @@ def emit_error_count(error_kind: str) -> dict[str, Any]:
     return emit_metric("ErrorCount", 1, {"error_kind": error_kind})
 
 
+def emit_barge_in_count(persona_id: str) -> dict[str, Any]:
+    return emit_metric("BargeInCount", 1, {"persona_id": persona_id})
+
+
 def emit_audio_frame_dropped(direction: str, persona_id: str, dropped_frames: int) -> dict[str, Any]:
     return emit_metric("AudioFrameDropped", dropped_frames, {"direction": direction, "persona_id": persona_id})

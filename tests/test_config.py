@@ -18,6 +18,9 @@ def test_settings_defaults_without_env_file() -> None:
     assert settings.audio_queue_maxsize == 50
     assert settings.nova_stream_open_timeout_seconds == 20.0
     assert settings.nova_response_timeout_seconds == 30.0
+    assert settings.barge_in_enabled is True
+    assert settings.barge_in_rms_threshold == 500.0
+    assert settings.barge_in_playback_grace_seconds == 0.75
     assert settings.graceful_shutdown_drain_seconds == 5.0
     assert settings.sessions_table_name == "sessions"
     assert settings.personas_table_name == "personas"
