@@ -9,18 +9,20 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 from app.audio import AudioConversionError, twilio_payload_to_nova_pcm16
 from app.config import Settings, get_settings
 from app.logging import log_event
-from app.metrics import emit_call_count, emit_error_count
+from app.metrics import emit_call_count, emit_error_count, emit_session_reattach_count
 from app.nova import NovaClient
-from app.personas import PersonaRepository, PersonaSelectionError, get_persona_repository, resolve_persona
+from app.personas import Persona, PersonaRepository, PersonaSelectionError, get_persona_repository
 from app.sessions import (
+    SessionAttachRejected,
     SessionActor,
     SessionPersistenceError,
+    SessionRecord,
     SessionRepository,
     SessionState,
     active_sessions,
+    attach_media_stream_with_retry,
     finalize_session_with_retry,
     get_session_repository,
-    update_session_with_retry,
 )
 from app.transcripts import TranscriptRepository, get_transcript_repository
 from app.twilio.bridge import NovaClientFactory, TwilioNovaBridge
@@ -168,25 +170,36 @@ async def media_websocket(
 
             if event_name == "start":
                 metadata = extract_start_metadata(event)
-                persona = await resolve_persona(
-                    requested_persona_id=metadata.persona_id,
+                if await active_sessions.get(metadata.session_id) is not None:
+                    emit_error_count("duplicate_active_session")
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "twilio_media_attach_rejected",
+                        error_kind="duplicate_active_session",
+                        **_metadata_fields(metadata),
+                    )
+                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                    return
+
+                attached_session = await _attach_media_stream(
+                    repository=session_repository,
                     settings=settings,
+                    metadata=metadata,
+                )
+                persona = await _load_session_persona(
                     repository=persona_repository,
+                    settings=settings,
+                    persona_id=attached_session.persona_id,
                 )
                 actor = SessionActor(
-                    session_id=metadata.session_id,
-                    call_sid=metadata.call_sid,
+                    session_id=attached_session.session_id,
+                    call_sid=attached_session.call_sid,
                     persona_id=persona.persona_id,
                     audio_queue_maxsize=settings.audio_queue_maxsize,
                 )
                 await active_sessions.create(actor)
                 await actor.activate()
-                await _update_session(
-                    repository=session_repository,
-                    settings=settings,
-                    metadata=metadata,
-                    status=SessionState.ACTIVE,
-                )
                 bridge = TwilioNovaBridge(
                     actor=actor,
                     websocket=websocket,
@@ -198,8 +211,19 @@ async def media_websocket(
                 )
                 await bridge.start()
                 started = True
-                emit_call_count(persona.persona_id)
-                log_event(logger, logging.INFO, "twilio_media_started", **_metadata_fields(metadata))
+                if attached_session.media_attach_count > 1:
+                    emit_session_reattach_count(persona.persona_id)
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "twilio_media_reattached",
+                        media_attach_count=attached_session.media_attach_count,
+                        recovery_reason=attached_session.recovery_reason,
+                        **_metadata_fields(metadata),
+                    )
+                else:
+                    emit_call_count(persona.persona_id)
+                    log_event(logger, logging.INFO, "twilio_media_started", **_metadata_fields(metadata))
                 continue
 
             if event_name == "media":
@@ -250,6 +274,26 @@ async def media_websocket(
         log_event(logger, logging.WARNING, "twilio_media_protocol_error", error_kind=error_kind, **_metadata_fields(metadata))
         await _fail_and_cleanup(actor, bridge, session_repository, settings, metadata, error_kind)
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+    except SessionAttachRejected as exc:
+        emit_error_count(exc.error_kind)
+        log_event(
+            logger,
+            logging.WARNING,
+            "twilio_media_attach_rejected",
+            error_kind=exc.error_kind,
+            **_metadata_fields(metadata),
+        )
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+    except SessionPersistenceError as exc:
+        emit_error_count(exc.error_kind)
+        log_event(
+            logger,
+            logging.ERROR,
+            "twilio_media_attach_failed",
+            error_kind=exc.error_kind,
+            **_metadata_fields(metadata),
+        )
+        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
     except PersonaSelectionError as exc:
         emit_error_count(exc.error_kind)
         log_event(
@@ -293,34 +337,43 @@ def _metadata_fields(metadata: TwilioStartMetadata | None) -> dict[str, Any]:
     }
 
 
-async def _update_session(
+async def _attach_media_stream(
     *,
     repository: SessionRepository,
     settings: Settings,
-    metadata: TwilioStartMetadata | None,
-    status: SessionState,
-    error_kind: str | None = None,
-) -> None:
-    if metadata is None:
-        return
+    metadata: TwilioStartMetadata,
+) -> SessionRecord:
+    return await attach_media_stream_with_retry(
+        repository=repository,
+        session_id=metadata.session_id,
+        call_sid=metadata.call_sid,
+        persona_id=metadata.persona_id,
+        stream_sid=metadata.stream_sid,
+        settings=settings,
+    )
+
+
+async def _load_session_persona(
+    *,
+    repository: PersonaRepository,
+    settings: Settings,
+    persona_id: str,
+) -> Persona:
     try:
-        await update_session_with_retry(
-            repository=repository,
-            session_id=metadata.session_id,
-            settings=settings,
-            status=status,
-            call_sid=metadata.call_sid,
-            error_kind=error_kind,
+        persona = await asyncio.wait_for(
+            asyncio.to_thread(repository.get_persona, persona_id),
+            timeout=settings.persona_lookup_timeout_seconds,
         )
-    except SessionPersistenceError as exc:
-        emit_error_count(exc.error_kind)
-        log_event(
-            logger,
-            logging.ERROR,
-            "session_update_failed",
-            error_kind=exc.error_kind,
-            **_metadata_fields(metadata),
-        )
+    except TimeoutError as exc:
+        raise PersonaSelectionError(requested_persona_id=persona_id, error_kind="persona_lookup_timeout") from exc
+    except Exception as exc:
+        raise PersonaSelectionError(requested_persona_id=persona_id, error_kind=type(exc).__name__) from exc
+
+    if persona is None:
+        raise PersonaSelectionError(requested_persona_id=persona_id, error_kind="missing_persona")
+    if not persona.active:
+        raise PersonaSelectionError(requested_persona_id=persona_id, error_kind="inactive_persona")
+    return persona
 
 
 async def _finalize_session(

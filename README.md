@@ -193,7 +193,11 @@ aws dynamodb create-table \
 
 Skip the create-table command if the table already exists. Use `SESSIONS_TABLE_NAME` to target a different table.
 
-The Twilio webhook creates a `starting` session record before returning TwiML. Session creation is critical: if the write fails after retries, the webhook returns an error instead of starting a media stream with no durable session record. When the media WebSocket starts, the record is marked `active`; Twilio `stop` finalizes it as `completed`; disconnects and error paths finalize it as `abandoned` or `failed`.
+The Twilio webhook creates a `starting` session record before returning TwiML. Session creation is critical: if the write fails after retries, the webhook returns an error instead of starting a media stream with no durable session record. When the media WebSocket starts, it must attach to that existing session by `session_id`, `call_sid`, `persona_id`, and `stream_sid`; missing sessions, mismatched call/persona values, terminal sessions, and duplicate in-process actors are rejected before Nova is opened.
+
+Media attach metadata is persisted with the session: `stream_sid`, `media_attach_count`, `last_attach_at`, `last_disconnect_at`, `recovered_at`, and `recovery_reason`. A stale `active` session can be re-attached by a new process with the same `session_id`, which starts a fresh `SessionActor` and Nova Sonic stream while continuing to write session and transcript history under the original durable session ID. This recovers durable context, not lost in-memory audio frames, pending assistant audio, partial transcript buffers, or the original WebSocket/Nova stream.
+
+Twilio `stop` finalizes the session as `completed`; disconnects and error paths finalize it as `abandoned` or `failed`.
 
 ## Transcripts
 
@@ -242,6 +246,7 @@ Current EMF metrics:
 - `ErrorCount`, dimensioned by `error_kind`.
 - `AudioFrameDropped`, dimensioned by `direction` and `persona_id`.
 - `BargeInCount`, dimensioned by `persona_id`.
+- `SessionReattachCount`, dimensioned by `persona_id`.
 
 For local validation, make a Twilio/ngrok call and confirm the logs include lifecycle events such as `twilio_media_started`, `nova_stream_started`, and `twilio_media_stopped`, plus top-level EMF JSON records containing `_aws`.
 
@@ -253,9 +258,11 @@ The implementation uses a lightweight PCM16 RMS threshold instead of logging or 
 
 ## Reliability
 
-Phase 13 makes failure paths explicit and bounded. Persona lookup, session writes, transcript writes, Nova stream open, Nova response waits, Twilio media idle, and service shutdown drain all have configured timeouts. DynamoDB session and transcript writes retry briefly according to their write criticality.
+Phase 13 makes failure paths explicit and bounded. Persona lookup, session writes, media stream attach, transcript writes, Nova stream open, Nova response waits, Twilio media idle, and service shutdown drain all have configured timeouts. DynamoDB session and transcript writes retry briefly according to their write criticality.
 
 If Nova response events stall, the bridge logs `nova_response_timeout` and keeps the call process alive. If Nova receive fails, the bridge logs `nova_receive_error` and avoids crashing the process. Twilio disconnects remove active actors from the process-local registry, and service shutdown uses FastAPI lifespan cleanup to abandon/finalize any active sessions as `abandoned` with `service_shutdown` where practical.
+
+The recovery model is durable re-attachment rather than same-stream continuation. If a task dies without finalizing the call, a later media `start` event carrying the same Stream Parameters can attach to the existing DynamoDB session, validate the original call/persona, increment `media_attach_count`, emit `SessionReattachCount`, and continue with a new Nova stream. If the prior task already finalized the session as `completed`, `failed`, or `abandoned`, re-attachment is rejected.
 
 ## Container
 

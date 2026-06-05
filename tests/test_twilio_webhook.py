@@ -8,7 +8,12 @@ from twilio.request_validator import RequestValidator
 from app.config import Settings, get_settings
 from app.main import app
 from app.personas import Persona, get_persona_repository
-from app.sessions import SessionRecord, get_session_repository
+from app.sessions import (
+    SessionRecord,
+    SessionState,
+    build_attached_session_record,
+    get_session_repository,
+)
 from app.twilio.webhook import media_stream_url, select_persona_id
 
 
@@ -48,9 +53,53 @@ class FakeSessionRepository:
 
     def update_session(self, session_id: str, **updates: object) -> None:
         self.updates.append((session_id, updates))
+        record = self.sessions.get(session_id)
+        if record is None:
+            return
+        changed = {
+            field: value.value if isinstance(value, SessionState) else value
+            for field, value in updates.items()
+            if value is not None
+        }
+        item = record.__dict__ | changed
+        item["status"] = SessionState(item["status"])
+        self.sessions[session_id] = SessionRecord(**item)
 
     def get_session(self, session_id: str) -> SessionRecord | None:
         return self.sessions.get(session_id)
+
+    def attach_media_stream(
+        self,
+        session_id: str,
+        *,
+        call_sid: str,
+        persona_id: str,
+        stream_sid: str,
+    ) -> SessionRecord:
+        record = build_attached_session_record(
+            self.get_session(session_id),
+            session_id=session_id,
+            call_sid=call_sid,
+            persona_id=persona_id,
+            stream_sid=stream_sid,
+        )
+        self.sessions[session_id] = record
+        self.updates.append(
+            (
+                session_id,
+                {
+                    "status": record.status,
+                    "call_sid": record.call_sid,
+                    "last_event_at": record.last_event_at,
+                    "stream_sid": record.stream_sid,
+                    "media_attach_count": record.media_attach_count,
+                    "last_attach_at": record.last_attach_at,
+                    "recovered_at": record.recovered_at,
+                    "recovery_reason": record.recovery_reason,
+                },
+            )
+        )
+        return record
 
 
 def make_persona_repository(*, appointment_active: bool = True) -> FakePersonaRepository:

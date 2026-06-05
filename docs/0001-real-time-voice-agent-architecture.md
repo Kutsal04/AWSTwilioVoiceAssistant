@@ -165,7 +165,7 @@ Persona records live in the `personas` table and include the system prompt, disp
 ### Negative Consequences
 
 - A single Fargate task is not highly available unless desired count is increased.
-- If a task dies during a call, the live media stream is likely lost. DynamoDB can preserve/finalize state, but true live-call continuation is out of scope.
+- If a task dies during a call, the original WebSocket, Nova stream, in-memory queues, and partial turn buffers are lost. DynamoDB preserves durable session/transcript context, and a later media stream carrying the same `session_id` can re-attach to the existing session and start a fresh Nova stream.
 - CLI-only transcript/report access is less convenient than HTTP endpoints.
 - DynamoDB scans for reporting are acceptable only because assignment data volume is small.
 - Barge-in is not included in the required path and may not be delivered if time runs short.
@@ -305,11 +305,11 @@ If scaling beyond the assignment:
 - Increase Fargate desired count.
 - Ensure session creation and stream routing remain task-local for each WebSocket.
 - Consider ALB stickiness only if multiple related WebSockets must land on the same task.
-- Consider Redis or another coordination layer only if true cross-task active-session recovery becomes required.
+- Consider Redis or another coordination layer only if exact cross-task active-stream continuation becomes required.
 
 ### Known Limitations
 
-- No true live-call recovery after Fargate task death.
+- No exact same-stream continuation after Fargate task death; recovery is durable session re-attachment with a fresh Nova stream.
 - No full barge-in in the required path.
 - Reporting uses simple DynamoDB reads/scans suitable for small assignment data.
 - No HIPAA-grade compliance, audit logging, or regulated data handling.

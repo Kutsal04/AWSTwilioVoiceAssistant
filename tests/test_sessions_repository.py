@@ -6,9 +6,12 @@ from botocore.exceptions import ClientError
 from app.config import Settings
 from app.sessions import (
     DynamoSessionRepository,
+    SessionAttachRejected,
     SessionPersistenceError,
     SessionRepositoryError,
     SessionState,
+    attach_media_stream_with_retry,
+    build_attached_session_record,
     create_session_with_retry,
     finalize_session_with_retry,
     new_session_record,
@@ -84,6 +87,17 @@ class FlakySessionRepository:
             self.fail_updates -= 1
             raise RuntimeError("update failed")
 
+    def attach_media_stream(self, session_id: str, **updates: object) -> object:
+        self.update_attempts += 1
+        if self.fail_updates:
+            self.fail_updates -= 1
+            raise RuntimeError("update failed")
+        return new_session_record(
+            session_id=session_id,
+            call_sid=str(updates["call_sid"]),
+            persona_id=str(updates["persona_id"]),
+        )
+
     def get_session(self, session_id: str) -> None:
         return None
 
@@ -105,6 +119,9 @@ class ClientErrorSessionRepository:
         raise SessionRepositoryError("failed to create session") from client_error
 
     def update_session(self, session_id: str, **updates: object) -> None:
+        return None
+
+    def attach_media_stream(self, session_id: str, **updates: object) -> None:
         return None
 
     def get_session(self, session_id: str) -> None:
@@ -154,6 +171,103 @@ def test_dynamo_session_repository_creates_updates_and_gets_items() -> None:
     assert stored.status == SessionState.COMPLETED
     assert stored.ended_at == "2026-06-01T00:00:01+00:00"
     assert stored.outcome_description == "twilio_stop"
+
+
+def test_dynamo_session_repository_attaches_media_stream() -> None:
+    table = FakeTable()
+    repository = DynamoSessionRepository(table_name="sessions", dynamodb_resource=FakeDynamoResource(table))
+    record = new_session_record(session_id="session-123", call_sid="CA123", persona_id="appointment_reminder")
+
+    repository.create_session(record)
+    attached = repository.attach_media_stream(
+        "session-123",
+        call_sid="CA123",
+        persona_id="appointment_reminder",
+        stream_sid="MZ123",
+    )
+
+    assert attached.status == SessionState.ACTIVE
+    assert attached.stream_sid == "MZ123"
+    assert attached.media_attach_count == 1
+    assert attached.last_attach_at is not None
+    assert attached.recovered_at is None
+    stored = repository.get_session("session-123")
+    assert stored is not None
+    assert stored.media_attach_count == 1
+    assert stored.stream_sid == "MZ123"
+
+
+def test_session_attach_marks_existing_active_session_as_recovered() -> None:
+    record = new_session_record(session_id="session-123", call_sid="CA123", persona_id="appointment_reminder")
+    first_attach = build_attached_session_record(
+        record,
+        session_id="session-123",
+        call_sid="CA123",
+        persona_id="appointment_reminder",
+        stream_sid="MZ-old",
+    )
+
+    reattached = build_attached_session_record(
+        first_attach,
+        session_id="session-123",
+        call_sid="CA123",
+        persona_id="appointment_reminder",
+        stream_sid="MZ-new",
+    )
+
+    assert reattached.media_attach_count == 2
+    assert reattached.stream_sid == "MZ-new"
+    assert reattached.recovered_at is not None
+    assert reattached.recovery_reason == "media_reattach"
+
+
+@pytest.mark.parametrize(
+    ("record", "error_kind"),
+    [
+        (None, "missing_session"),
+        (
+            new_session_record(session_id="session-123", call_sid="CA-other", persona_id="appointment_reminder"),
+            "session_call_sid_mismatch",
+        ),
+        (
+            new_session_record(session_id="session-123", call_sid="CA123", persona_id="warm_clinical_followup"),
+            "session_persona_mismatch",
+        ),
+    ],
+)
+def test_session_attach_rejects_invalid_sessions(record: object, error_kind: str) -> None:
+    with pytest.raises(SessionAttachRejected) as exc_info:
+        build_attached_session_record(
+            record,  # type: ignore[arg-type]
+            session_id="session-123",
+            call_sid="CA123",
+            persona_id="appointment_reminder",
+            stream_sid="MZ123",
+        )
+
+    assert exc_info.value.error_kind == error_kind
+
+
+def test_session_attach_rejects_terminal_sessions() -> None:
+    record = new_session_record(session_id="session-123", call_sid="CA123", persona_id="appointment_reminder")
+    terminal_record = record.__class__(
+        **{
+            **record.__dict__,
+            "status": SessionState.COMPLETED,
+            "ended_at": "2026-06-01T00:00:01+00:00",
+        }
+    )
+
+    with pytest.raises(SessionAttachRejected) as exc_info:
+        build_attached_session_record(
+            terminal_record,
+            session_id="session-123",
+            call_sid="CA123",
+            persona_id="appointment_reminder",
+            stream_sid="MZ123",
+        )
+
+    assert exc_info.value.error_kind == "terminal_session"
 
 
 def test_dynamo_session_repository_scans_all_pages() -> None:
@@ -209,6 +323,29 @@ def test_finalize_session_retry_policy_raises_after_configured_attempts() -> Non
 
         assert exc_info.value.operation == "finalize"
         assert repository.update_attempts == 4
+
+    asyncio.run(run())
+
+
+def test_attach_media_stream_retry_policy_retries_then_succeeds() -> None:
+    async def run() -> None:
+        settings = Settings(
+            _env_file=None,
+            session_update_max_attempts=3,
+            session_write_retry_delay_seconds=0,
+        )
+        repository = FlakySessionRepository(fail_updates=2)
+
+        await attach_media_stream_with_retry(
+            repository=repository,
+            session_id="session-123",
+            call_sid="CA123",
+            persona_id="appointment_reminder",
+            stream_sid="MZ123",
+            settings=settings,
+        )
+
+        assert repository.update_attempts == 3
 
     asyncio.run(run())
 
